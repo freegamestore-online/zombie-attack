@@ -1,1211 +1,717 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Shell } from "./components/Shell";
 import * as BABYLON from "@babylonjs/core";
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+const ARENA = 44;
+const PLAYER_HEIGHT = 1.72;
+const PLAYER_SPEED = 0.13;
+const MOUSE_SENS = 0.0022;
+const MAX_HP = 100;
+const MAX_AMMO = 12;
+const RELOAD_TIME = 1.8;
+const ZOMBIE_ATTACK_RANGE = 1.8;
+const ZOMBIE_ATTACK_DAMAGE = 10;
+const ZOMBIE_ATTACK_COOLDOWN = 1.1;
+const WAVE_BREAK = 4.0;
+
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface Zombie {
+interface ZombieEntity {
   id: number;
   root: BABYLON.Mesh;
   body: BABYLON.Mesh;
   head: BABYLON.Mesh;
-  leftArm: BABYLON.Mesh;
-  rightArm: BABYLON.Mesh;
-  leftLeg: BABYLON.Mesh;
-  rightLeg: BABYLON.Mesh;
-  hp: number;
-  speed: number;
-  animTime: number;
-  dead: boolean;
-  attackCooldown: number;
-}
-
-interface GameState {
+  lArm: BABYLON.Mesh;
+  rArm: BABYLON.Mesh;
+  lLeg: BABYLON.Mesh;
+  rLeg: BABYLON.Mesh;
   hp: number;
   maxHp: number;
+  speed: number;
+  animT: number;
+  dead: boolean;
+  atkCd: number;
+}
+
+interface UIState {
+  hp: number;
   ammo: number;
-  maxAmmo: number;
   wave: number;
   kills: number;
-  totalKills: number;
-  phase: "playing" | "dead" | "waveBreak";
-  waveBreakTimer: number;
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-const ARENA_SIZE = 40;
-const ZOMBIE_BASE_HP = 3;
-const ZOMBIE_BASE_SPEED = 0.035;
-const ATTACK_RANGE = 1.6;
-const ATTACK_DAMAGE = 8;
-const ATTACK_COOLDOWN = 1.2;
-const RELOAD_TIME = 1.8;
-const MAX_AMMO = 12;
-const WAVE_BREAK_DURATION = 4.0;
-const PLAYER_SPEED = 0.12;
-const PLAYER_HEIGHT = 1.7;
-
-// ─── HUD Component ────────────────────────────────────────────────────────────
-interface HudProps {
-  state: GameState;
+  phase: "playing" | "waveBreak" | "dead";
+  waveTimer: number;
   reloading: boolean;
-  reloadProgress: number;
-  highScore: number;
+  reloadPct: number;
 }
 
-function Hud({ state, reloading, reloadProgress, highScore }: HudProps) {
-  const hpPct = (state.hp / state.maxHp) * 100;
-  const hpColor =
-    hpPct > 60 ? "#22c55e" : hpPct > 30 ? "#f59e0b" : "#ef4444";
-
+// ─── HUD ──────────────────────────────────────────────────────────────────────
+function Hud({ ui, best }: { ui: UIState; best: number }) {
+  const hpPct = (ui.hp / MAX_HP) * 100;
+  const hpCol = hpPct > 60 ? "#22c55e" : hpPct > 30 ? "#f59e0b" : "#ef4444";
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        pointerEvents: "none",
-        fontFamily: "Manrope, sans-serif",
-      }}
-    >
+    <div style={{ position: "absolute", inset: 0, pointerEvents: "none", fontFamily: "Manrope,sans-serif" }}>
       {/* Crosshair */}
-      <div
-        style={{
-          position: "absolute",
-          top: "50%",
-          left: "50%",
-          transform: "translate(-50%,-50%)",
-          width: 20,
-          height: 20,
-        }}
-      >
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: 0,
-            right: 0,
-            height: 2,
-            background: "rgba(255,255,255,0.85)",
-            marginTop: -1,
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: "50%",
-            top: 0,
-            bottom: 0,
-            width: 2,
-            background: "rgba(255,255,255,0.85)",
-            marginLeft: -1,
-          }}
-        />
+      <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 22, height: 22 }}>
+        <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 2, background: "rgba(255,255,255,.82)", marginTop: -1 }} />
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 2, background: "rgba(255,255,255,.82)", marginLeft: -1 }} />
+        <div style={{ position: "absolute", top: "50%", left: "50%", width: 6, height: 6, borderRadius: "50%", border: "1.5px solid rgba(255,255,255,.5)", transform: "translate(-50%,-50%)" }} />
       </div>
 
-      {/* Health bar — bottom left */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 28,
-          left: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-        }}
-      >
-        <span
-          style={{
-            color: "#fff",
-            fontSize: 12,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textShadow: "0 1px 4px #000",
-          }}
-        >
-          ❤ HEALTH
-        </span>
-        <div
-          style={{
-            width: 160,
-            height: 14,
-            background: "rgba(0,0,0,0.55)",
-            borderRadius: 7,
-            border: "1px solid rgba(255,255,255,0.18)",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              width: `${hpPct}%`,
-              height: "100%",
-              background: hpColor,
-              borderRadius: 7,
-              transition: "width 0.2s, background 0.3s",
-            }}
-          />
+      {/* Health — bottom left */}
+      <div style={{ position: "absolute", bottom: 28, left: 24 }}>
+        <div style={{ color: "#aaa", fontSize: 11, fontWeight: 700, letterSpacing: ".1em", marginBottom: 4 }}>❤ HEALTH</div>
+        <div style={{ width: 170, height: 13, background: "rgba(0,0,0,.55)", borderRadius: 7, border: "1px solid rgba(255,255,255,.15)", overflow: "hidden" }}>
+          <div style={{ width: `${hpPct}%`, height: "100%", background: hpCol, borderRadius: 7, transition: "width .15s,background .3s" }} />
         </div>
-        <span
-          style={{
-            color: hpColor,
-            fontSize: 11,
-            fontWeight: 600,
-            textShadow: "0 1px 4px #000",
-          }}
-        >
-          {state.hp} / {state.maxHp}
-        </span>
+        <div style={{ color: hpCol, fontSize: 11, fontWeight: 700, marginTop: 3, textShadow: "0 1px 4px #000" }}>{ui.hp} / {MAX_HP}</div>
       </div>
 
       {/* Ammo — bottom right */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 28,
-          right: 24,
-          textAlign: "right",
-        }}
-      >
-        {reloading ? (
+      <div style={{ position: "absolute", bottom: 28, right: 24, textAlign: "right" }}>
+        {ui.reloading ? (
           <>
-            <div
-              style={{
-                color: "#f59e0b",
-                fontSize: 13,
-                fontWeight: 700,
-                textShadow: "0 1px 4px #000",
-                marginBottom: 4,
-              }}
-            >
-              RELOADING…
-            </div>
-            <div
-              style={{
-                width: 100,
-                height: 6,
-                background: "rgba(0,0,0,0.55)",
-                borderRadius: 3,
-                overflow: "hidden",
-                marginLeft: "auto",
-              }}
-            >
-              <div
-                style={{
-                  width: `${reloadProgress * 100}%`,
-                  height: "100%",
-                  background: "#f59e0b",
-                  borderRadius: 3,
-                }}
-              />
+            <div style={{ color: "#f59e0b", fontSize: 13, fontWeight: 700, textShadow: "0 1px 4px #000", marginBottom: 4 }}>RELOADING…</div>
+            <div style={{ width: 110, height: 6, background: "rgba(0,0,0,.55)", borderRadius: 3, overflow: "hidden", marginLeft: "auto" }}>
+              <div style={{ width: `${ui.reloadPct * 100}%`, height: "100%", background: "#f59e0b", borderRadius: 3, transition: "width .05s" }} />
             </div>
           </>
         ) : (
-          <span
-            style={{
-              color: state.ammo === 0 ? "#ef4444" : "#fff",
-              fontSize: 26,
-              fontWeight: 800,
-              textShadow: "0 2px 8px #000",
-              fontFamily: "Fraunces, serif",
-            }}
-          >
-            {state.ammo}
-            <span style={{ fontSize: 14, color: "rgba(255,255,255,0.5)" }}>
-              {" "}
-              / {state.maxAmmo}
-            </span>
-          </span>
+          <div style={{ color: ui.ammo === 0 ? "#ef4444" : "#fff", fontSize: 30, fontWeight: 800, textShadow: "0 2px 8px #000", fontFamily: "Fraunces,serif", lineHeight: 1 }}>
+            {ui.ammo}<span style={{ fontSize: 14, color: "rgba(255,255,255,.45)" }}> / {MAX_AMMO}</span>
+          </div>
         )}
-        <div
-          style={{
-            color: "rgba(255,255,255,0.55)",
-            fontSize: 11,
-            fontWeight: 600,
-            marginTop: 2,
-          }}
-        >
-          🔫 AMMO &nbsp;[R] reload
-        </div>
+        <div style={{ color: "rgba(255,255,255,.5)", fontSize: 11, fontWeight: 600, marginTop: 3 }}>🔫 AMMO · [R] reload</div>
       </div>
 
       {/* Wave / kills — top right */}
-      <div
-        style={{
-          position: "absolute",
-          top: 16,
-          right: 24,
-          textAlign: "right",
-        }}
-      >
-        <div
-          style={{
-            color: "#fff",
-            fontSize: 18,
-            fontWeight: 800,
-            textShadow: "0 2px 8px #000",
-            fontFamily: "Fraunces, serif",
-          }}
-        >
-          WAVE {state.wave}
-        </div>
-        <div
-          style={{
-            color: "rgba(255,255,255,0.6)",
-            fontSize: 12,
-            fontWeight: 600,
-          }}
-        >
-          Kills: {state.totalKills} &nbsp;|&nbsp; Best: {highScore}
-        </div>
+      <div style={{ position: "absolute", top: 14, right: 22, textAlign: "right" }}>
+        <div style={{ color: "#fff", fontSize: 20, fontWeight: 800, fontFamily: "Fraunces,serif", textShadow: "0 2px 8px #000" }}>WAVE {ui.wave}</div>
+        <div style={{ color: "rgba(255,255,255,.55)", fontSize: 12, fontWeight: 600 }}>Kills {ui.kills} · Best {best}</div>
       </div>
 
-      {/* Wave break overlay */}
-      {state.phase === "waveBreak" && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(0,0,0,0.45)",
-          }}
-        >
-          <div
-            style={{
-              color: "#22c55e",
-              fontSize: 38,
-              fontWeight: 800,
-              fontFamily: "Fraunces, serif",
-              textShadow: "0 4px 24px #000",
-            }}
-          >
-            Wave {state.wave - 1} Cleared!
-          </div>
-          <div
-            style={{
-              color: "rgba(255,255,255,0.75)",
-              fontSize: 16,
-              marginTop: 10,
-              fontWeight: 600,
-            }}
-          >
-            Next wave in {Math.ceil(state.waveBreakTimer)}s…
-          </div>
+      {/* Wave-break overlay */}
+      {ui.phase === "waveBreak" && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.42)" }}>
+          <div style={{ color: "#22c55e", fontSize: 42, fontWeight: 800, fontFamily: "Fraunces,serif", textShadow: "0 4px 24px #000" }}>Wave {ui.wave - 1} Cleared!</div>
+          <div style={{ color: "rgba(255,255,255,.7)", fontSize: 16, marginTop: 10, fontWeight: 600 }}>Next wave in {Math.ceil(ui.waveTimer)}s…</div>
         </div>
       )}
     </div>
   );
 }
 
-// ─── Game Over Screen ─────────────────────────────────────────────────────────
-interface GameOverProps {
-  kills: number;
-  wave: number;
-  highScore: number;
-  onRestart: () => void;
-}
-
-function GameOverScreen({ kills, wave, highScore, onRestart }: GameOverProps) {
+// ─── Game-Over Screen ─────────────────────────────────────────────────────────
+function GameOver({ kills, wave, best, onRestart }: { kills: number; wave: number; best: number; onRestart: () => void }) {
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.78)",
-        fontFamily: "Manrope, sans-serif",
-      }}
-    >
-      <div
-        style={{
-          color: "#ef4444",
-          fontSize: 52,
-          fontWeight: 800,
-          fontFamily: "Fraunces, serif",
-          textShadow: "0 4px 32px #000",
-          marginBottom: 8,
-        }}
-      >
-        YOU DIED
-      </div>
-      <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 16, marginBottom: 4 }}>
-        Survived to Wave <strong style={{ color: "#fff" }}>{wave}</strong>
-      </div>
-      <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 16, marginBottom: 4 }}>
-        Total Kills: <strong style={{ color: "#f59e0b" }}>{kills}</strong>
-      </div>
-      <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 13, marginBottom: 32 }}>
-        Best: {highScore} kills
-      </div>
-      <button
-        onClick={onRestart}
-        style={{
-          background: "#ef4444",
-          color: "#fff",
-          border: "none",
-          borderRadius: 10,
-          padding: "14px 48px",
-          fontSize: 18,
-          fontWeight: 800,
-          cursor: "pointer",
-          fontFamily: "Fraunces, serif",
-          letterSpacing: "0.04em",
-          boxShadow: "0 4px 24px rgba(239,68,68,0.5)",
-          minHeight: 48,
-        }}
-      >
-        PLAY AGAIN
-      </button>
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.8)", fontFamily: "Manrope,sans-serif" }}>
+      <div style={{ color: "#ef4444", fontSize: 56, fontWeight: 800, fontFamily: "Fraunces,serif", textShadow: "0 4px 32px #000", marginBottom: 8 }}>YOU DIED</div>
+      <div style={{ color: "rgba(255,255,255,.7)", fontSize: 17, marginBottom: 4 }}>Survived to <strong style={{ color: "#fff" }}>Wave {wave}</strong></div>
+      <div style={{ color: "rgba(255,255,255,.7)", fontSize: 17, marginBottom: 4 }}>Kills: <strong style={{ color: "#f59e0b" }}>{kills}</strong></div>
+      <div style={{ color: "rgba(255,255,255,.4)", fontSize: 13, marginBottom: 36 }}>Best: {best} kills</div>
+      <button onClick={onRestart} style={{ background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "14px 52px", fontSize: 19, fontWeight: 800, cursor: "pointer", fontFamily: "Fraunces,serif", boxShadow: "0 4px 24px rgba(239,68,68,.5)", minHeight: 52 }}>PLAY AGAIN</button>
     </div>
   );
 }
 
 // ─── Start Screen ─────────────────────────────────────────────────────────────
-interface StartScreenProps {
-  onStart: () => void;
-  highScore: number;
-}
-
-function StartScreen({ onStart, highScore }: StartScreenProps) {
+function StartScreen({ best, onStart }: { best: number; onStart: () => void }) {
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.72)",
-        fontFamily: "Manrope, sans-serif",
-      }}
-    >
-      <div
-        style={{
-          color: "#ef4444",
-          fontSize: 52,
-          fontWeight: 800,
-          fontFamily: "Fraunces, serif",
-          textShadow: "0 4px 32px #000",
-          marginBottom: 4,
-        }}
-      >
-        🧟 ZOMBIE ATTACK
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,.75)", fontFamily: "Manrope,sans-serif" }}>
+      <div style={{ color: "#ef4444", fontSize: 54, fontWeight: 800, fontFamily: "Fraunces,serif", textShadow: "0 4px 32px #000", marginBottom: 6 }}>🧟 ZOMBIE ATTACK</div>
+      <div style={{ color: "rgba(255,255,255,.65)", fontSize: 14, marginBottom: 10, textAlign: "center", maxWidth: 340, lineHeight: 1.7 }}>
+        Survive endless waves of the undead.<br />
+        <strong style={{ color: "#fff" }}>WASD</strong> move · <strong style={{ color: "#fff" }}>Mouse</strong> aim · <strong style={{ color: "#fff" }}>Click</strong> shoot · <strong style={{ color: "#fff" }}>R</strong> reload
       </div>
-      <div style={{ color: "rgba(255,255,255,0.65)", fontSize: 14, marginBottom: 28, textAlign: "center", maxWidth: 320 }}>
-        Survive endless waves of zombies. Aim with your mouse, shoot with{" "}
-        <strong style={{ color: "#fff" }}>Left Click</strong>, move with{" "}
-        <strong style={{ color: "#fff" }}>WASD</strong>, reload with{" "}
-        <strong style={{ color: "#fff" }}>R</strong>.
-      </div>
-      {highScore > 0 && (
-        <div style={{ color: "#f59e0b", fontSize: 14, marginBottom: 20, fontWeight: 700 }}>
-          🏆 Best: {highScore} kills
-        </div>
-      )}
-      <button
-        onClick={onStart}
-        style={{
-          background: "#ef4444",
-          color: "#fff",
-          border: "none",
-          borderRadius: 10,
-          padding: "14px 48px",
-          fontSize: 18,
-          fontWeight: 800,
-          cursor: "pointer",
-          fontFamily: "Fraunces, serif",
-          letterSpacing: "0.04em",
-          boxShadow: "0 4px 24px rgba(239,68,68,0.5)",
-          minHeight: 48,
-        }}
-      >
-        CLICK TO PLAY
-      </button>
+      {best > 0 && <div style={{ color: "#f59e0b", fontSize: 14, marginBottom: 22, fontWeight: 700 }}>🏆 Best: {best} kills</div>}
+      <button onClick={onStart} style={{ background: "#ef4444", color: "#fff", border: "none", borderRadius: 10, padding: "14px 52px", fontSize: 19, fontWeight: 800, cursor: "pointer", fontFamily: "Fraunces,serif", boxShadow: "0 4px 24px rgba(239,68,68,.5)", minHeight: 52 }}>CLICK TO PLAY</button>
     </div>
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // ── React UI state ──────────────────────────────────────────────────────────
+  const [screen, setScreen] = useState<"start" | "game" | "dead">("start");
+  const [ui, setUi] = useState<UIState>({ hp: MAX_HP, ammo: MAX_AMMO, wave: 1, kills: 0, phase: "playing", waveTimer: WAVE_BREAK, reloading: false, reloadPct: 0 });
+  const [best, setBest] = useState(() => parseInt(localStorage.getItem("za_best") ?? "0", 10) || 0);
+
+  // ── Mutable game state refs (no re-render) ──────────────────────────────────
+  const screenRef = useRef<"start" | "game" | "dead">("start");
   const engineRef = useRef<BABYLON.Engine | null>(null);
   const sceneRef = useRef<BABYLON.Scene | null>(null);
   const cameraRef = useRef<BABYLON.UniversalCamera | null>(null);
 
-  // Game state (React UI)
-  const [uiState, setUiState] = useState<GameState>({
-    hp: 100,
-    maxHp: 100,
-    ammo: MAX_AMMO,
-    maxAmmo: MAX_AMMO,
-    wave: 1,
-    kills: 0,
-    totalKills: 0,
-    phase: "playing",
-    waveBreakTimer: WAVE_BREAK_DURATION,
-  });
-  const [reloading, setReloading] = useState(false);
-  const [reloadProgress, setReloadProgress] = useState(0);
-  const [screen, setScreen] = useState<"start" | "game" | "dead">("start");
-  const [highScore, setHighScore] = useState(() => {
-    const s = localStorage.getItem("zombie_attack_highscore");
-    return s ? parseInt(s, 10) || 0 : 0;
-  });
+  // game state
+  const hp = useRef(MAX_HP);
+  const ammo = useRef(MAX_AMMO);
+  const wave = useRef(1);
+  const kills = useRef(0);
+  const phase = useRef<"playing" | "waveBreak" | "dead">("playing");
+  const waveTimer = useRef(WAVE_BREAK);
+  const reloading = useRef(false);
+  const reloadTimer = useRef(0);
+  const zombieId = useRef(0);
+  const zombies = useRef<ZombieEntity[]>([]);
+  const keys = useRef<Record<string, boolean>>({});
+  const muzzleFlash = useRef<BABYLON.Mesh | null>(null);
+  const muzzleTimer = useRef(0);
+  const damageFlashTimer = useRef(0);
+  const gunRoot = useRef<BABYLON.Mesh | null>(null);
+  const gunBobT = useRef(0);
 
-  // Mutable game refs (no re-render needed)
-  const gsRef = useRef<GameState>({
-    hp: 100,
-    maxHp: 100,
-    ammo: MAX_AMMO,
-    maxAmmo: MAX_AMMO,
-    wave: 1,
-    kills: 0,
-    totalKills: 0,
-    phase: "playing",
-    waveBreakTimer: WAVE_BREAK_DURATION,
-  });
-  const zombiesRef = useRef<Zombie[]>([]);
-  const zombieIdRef = useRef(0);
-  const reloadingRef = useRef(false);
-  const reloadTimerRef = useRef(0);
-  const playerPosRef = useRef(new BABYLON.Vector3(0, PLAYER_HEIGHT, 0));
-  const keysRef = useRef<Record<string, boolean>>({});
-  const lastTimeRef = useRef(0);
-  const muzzleFlashRef = useRef<BABYLON.Mesh | null>(null);
-  const muzzleFlashTimerRef = useRef(0);
-  const screenRef = useRef<"start" | "game" | "dead">("start");
-  const flashRef = useRef<HTMLDivElement | null>(null);
-  const damageFlashTimerRef = useRef(0);
+  // sync screen ref
+  useEffect(() => { screenRef.current = screen; }, [screen]);
 
-  // Sync screen ref
-  useEffect(() => {
-    screenRef.current = screen;
-  }, [screen]);
+  // ── Push UI state ────────────────────────────────────────────────────────────
+  function pushUi() {
+    setUi({
+      hp: hp.current,
+      ammo: ammo.current,
+      wave: wave.current,
+      kills: kills.current,
+      phase: phase.current,
+      waveTimer: waveTimer.current,
+      reloading: reloading.current,
+      reloadPct: reloading.current ? Math.min(1, (RELOAD_TIME - reloadTimer.current) / RELOAD_TIME) : 0,
+    });
+  }
 
-  // ── Build / destroy Babylon scene ─────────────────────────────────────────
+  // ── Build Babylon scene (once) ───────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const engine = new BABYLON.Engine(canvas, true, {
-      preserveDrawingBuffer: false,
-      stencil: false,
-    });
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false });
     engineRef.current = engine;
-
-    const scene = buildScene(engine, canvas);
+    const scene = new BABYLON.Scene(engine);
     sceneRef.current = scene;
+
+    // Sky / fog
+    scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.04, 1);
+    scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+    scene.fogDensity = 0.022;
+    scene.fogColor = new BABYLON.Color3(0.04, 0.07, 0.04);
+
+    // Camera
+    const cam = new BABYLON.UniversalCamera("fp", new BABYLON.Vector3(0, PLAYER_HEIGHT, 0), scene);
+    cam.setTarget(new BABYLON.Vector3(0, PLAYER_HEIGHT, 1));
+    cam.minZ = 0.04;
+    cam.maxZ = 220;
+    cam.fov = 1.08;
+    cameraRef.current = cam;
+
+    // Lighting
+    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+    hemi.intensity = 0.5;
+    hemi.diffuse = new BABYLON.Color3(0.45, 0.75, 0.45);
+    hemi.groundColor = new BABYLON.Color3(0.04, 0.08, 0.04);
+    const dir = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-0.4, -1, -0.3), scene);
+    dir.intensity = 0.65;
+    dir.diffuse = new BABYLON.Color3(0.85, 0.95, 0.65);
+
+    // Ground
+    const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: ARENA, height: ARENA, subdivisions: 6 }, scene);
+    const gm = new BABYLON.StandardMaterial("gm", scene);
+    gm.diffuseColor = new BABYLON.Color3(0.1, 0.16, 0.08);
+    gm.specularColor = BABYLON.Color3.Black();
+    ground.material = gm;
+
+    // Walls
+    buildWalls(scene);
+    // Obstacles
+    buildObstacles(scene);
+    // Gun
+    buildGun(scene, cam);
+    // Muzzle flash
+    const mf = BABYLON.MeshBuilder.CreateSphere("mf", { diameter: 0.22, segments: 5 }, scene);
+    const mfm = new BABYLON.StandardMaterial("mfm", scene);
+    mfm.diffuseColor = new BABYLON.Color3(1, 0.9, 0.3);
+    mfm.emissiveColor = new BABYLON.Color3(1, 0.75, 0.1);
+    mf.material = mfm;
+    mf.isVisible = false;
+    muzzleFlash.current = mf;
+
+    // Input
+    setupInput(scene, canvas);
+
+    // Render loop
+    let lastT = performance.now();
+    scene.onBeforeRenderObservable.add(() => {
+      const now = performance.now();
+      const dt = Math.min((now - lastT) / 1000, 0.05);
+      lastT = now;
+      if (screenRef.current === "game") tick(scene, dt);
+    });
 
     engine.runRenderLoop(() => scene.render());
     const onResize = () => engine.resize();
     window.addEventListener("resize", onResize);
-
-    return () => {
-      window.removeEventListener("resize", onResize);
-      engine.dispose();
-    };
+    return () => { window.removeEventListener("resize", onResize); engine.dispose(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Build Scene ───────────────────────────────────────────────────────────
-  function buildScene(engine: BABYLON.Engine, canvas: HTMLCanvasElement): BABYLON.Scene {
-    const scene = new BABYLON.Scene(engine);
-    scene.clearColor = new BABYLON.Color4(0.05, 0.07, 0.05, 1);
-    scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
-    scene.fogDensity = 0.025;
-    scene.fogColor = new BABYLON.Color3(0.05, 0.08, 0.05);
-
-    // ── Camera (FPS) ─────────────────────────────────────────────────────
-    const camera = new BABYLON.UniversalCamera(
-      "fpCam",
-      new BABYLON.Vector3(0, PLAYER_HEIGHT, 0),
-      scene
-    );
-    camera.setTarget(new BABYLON.Vector3(0, PLAYER_HEIGHT, 1));
-    camera.minZ = 0.05;
-    camera.maxZ = 200;
-    camera.fov = 1.1;
-    cameraRef.current = camera;
-
-    // ── Lighting ──────────────────────────────────────────────────────────
-    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
-    hemi.intensity = 0.55;
-    hemi.diffuse = new BABYLON.Color3(0.5, 0.8, 0.5);
-    hemi.groundColor = new BABYLON.Color3(0.05, 0.1, 0.05);
-
-    const dirLight = new BABYLON.DirectionalLight(
-      "dir",
-      new BABYLON.Vector3(-0.5, -1, -0.3),
-      scene
-    );
-    dirLight.intensity = 0.7;
-    dirLight.diffuse = new BABYLON.Color3(0.9, 0.95, 0.7);
-
-    // ── Ground ────────────────────────────────────────────────────────────
-    const ground = BABYLON.MeshBuilder.CreateGround(
-      "ground",
-      { width: ARENA_SIZE, height: ARENA_SIZE, subdivisions: 8 },
-      scene
-    );
-    const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
-    groundMat.diffuseColor = new BABYLON.Color3(0.12, 0.18, 0.1);
-    groundMat.specularColor = new BABYLON.Color3(0, 0, 0);
-    ground.material = groundMat;
-
-    // ── Arena walls ───────────────────────────────────────────────────────
-    buildWalls(scene);
-
-    // ── Obstacles ─────────────────────────────────────────────────────────
-    buildObstacles(scene);
-
-    // ── Gun model (FP view) ───────────────────────────────────────────────
-    buildGunModel(scene, camera);
-
-    // ── Muzzle flash ──────────────────────────────────────────────────────
-    const muzzleFlash = BABYLON.MeshBuilder.CreateSphere(
-      "muzzle",
-      { diameter: 0.18 },
-      scene
-    );
-    const muzzleMat = new BABYLON.StandardMaterial("muzzleMat", scene);
-    muzzleMat.diffuseColor = new BABYLON.Color3(1, 0.9, 0.3);
-    muzzleMat.emissiveColor = new BABYLON.Color3(1, 0.8, 0.2);
-    muzzleFlash.material = muzzleMat;
-    muzzleFlash.isVisible = false;
-    muzzleFlashRef.current = muzzleFlash;
-
-    // ── Input ─────────────────────────────────────────────────────────────
-    setupInput(scene, canvas);
-
-    // ── Game loop ─────────────────────────────────────────────────────────
-    let lastT = performance.now();
-    scene.onBeforeRenderObservable.add(() => {
-      if (screenRef.current !== "game") return;
-      const now = performance.now();
-      const dt = Math.min((now - lastT) / 1000, 0.05);
-      lastT = now;
-      lastTimeRef.current = now;
-      gameLoop(scene, dt);
-    });
-
-    return scene;
-  }
-
   // ── Walls ─────────────────────────────────────────────────────────────────
   function buildWalls(scene: BABYLON.Scene) {
-    const wallMat = new BABYLON.StandardMaterial("wallMat", scene);
-    wallMat.diffuseColor = new BABYLON.Color3(0.18, 0.22, 0.16);
-    wallMat.specularColor = new BABYLON.Color3(0, 0, 0);
-    const h = 5;
-    const half = ARENA_SIZE / 2;
-    const wallDefs: Array<{ pos: BABYLON.Vector3; w: number; d: number }> = [
-      { pos: new BABYLON.Vector3(0, h / 2, half), w: ARENA_SIZE, d: 0.6 },
-      { pos: new BABYLON.Vector3(0, h / 2, -half), w: ARENA_SIZE, d: 0.6 },
-      { pos: new BABYLON.Vector3(half, h / 2, 0), w: 0.6, d: ARENA_SIZE },
-      { pos: new BABYLON.Vector3(-half, h / 2, 0), w: 0.6, d: ARENA_SIZE },
+    const wm = new BABYLON.StandardMaterial("wm", scene);
+    wm.diffuseColor = new BABYLON.Color3(0.16, 0.2, 0.14);
+    wm.specularColor = BABYLON.Color3.Black();
+    const H = 6, half = ARENA / 2;
+    const defs = [
+      { pos: [0, H / 2, half] as [number, number, number], w: ARENA + 1.2, d: 0.7 },
+      { pos: [0, H / 2, -half] as [number, number, number], w: ARENA + 1.2, d: 0.7 },
+      { pos: [half, H / 2, 0] as [number, number, number], w: 0.7, d: ARENA },
+      { pos: [-half, H / 2, 0] as [number, number, number], w: 0.7, d: ARENA },
     ];
-    wallDefs.forEach((def, i) => {
-      const w = BABYLON.MeshBuilder.CreateBox(
-        `wall${i}`,
-        { width: def.w, height: h, depth: def.d },
-        scene
-      );
-      w.position = def.pos;
-      w.material = wallMat;
+    defs.forEach((d, i) => {
+      const w = BABYLON.MeshBuilder.CreateBox(`wall${i}`, { width: d.w, height: H, depth: d.d }, scene);
+      w.position.set(...d.pos);
+      w.material = wm;
     });
   }
 
-  // ── Obstacles ─────────────────────────────────────────────────────────────
+  // ── Obstacles ──────────────────────────────────────────────────────────────
   function buildObstacles(scene: BABYLON.Scene) {
-    const cratePositions = [
+    const cm = new BABYLON.StandardMaterial("cm", scene);
+    cm.diffuseColor = new BABYLON.Color3(0.32, 0.24, 0.16);
+    const bm = new BABYLON.StandardMaterial("bm", scene);
+    bm.diffuseColor = new BABYLON.Color3(0.18, 0.18, 0.2);
+
+    const cratePos: [number, number][] = [
       [6, 4], [-6, 4], [6, -4], [-6, -4],
-      [10, 10], [-10, 10], [10, -10], [-10, -10],
+      [11, 11], [-11, 11], [11, -11], [-11, -11],
       [0, 8], [8, 0], [-8, 0], [0, -8],
+      [14, 0], [-14, 0], [0, 14], [0, -14],
     ];
-    const crateMat = new BABYLON.StandardMaterial("crateMat", scene);
-    crateMat.diffuseColor = new BABYLON.Color3(0.35, 0.27, 0.18);
-    cratePositions.forEach(([x, z], i) => {
-      const c = BABYLON.MeshBuilder.CreateBox(
-        `crate${i}`,
-        { width: 1.2, height: 1.2, depth: 1.2 },
-        scene
-      );
-      c.position.set(x ?? 0, 0.6, z ?? 0);
-      c.material = crateMat;
+    cratePos.forEach(([x, z], i) => {
+      const c = BABYLON.MeshBuilder.CreateBox(`c${i}`, { width: 1.3, height: 1.3, depth: 1.3 }, scene);
+      c.position.set(x, 0.65, z);
+      c.material = cm;
     });
 
-    // Barrel clusters
-    const barrelMat = new BABYLON.StandardMaterial("barrelMat", scene);
-    barrelMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.22);
-    [[4, 12], [-4, 12], [4, -12], [-4, -12]].forEach(([x, z], i) => {
-      const b = BABYLON.MeshBuilder.CreateCylinder(
-        `barrel${i}`,
-        { diameter: 0.7, height: 1.1, tessellation: 8 },
-        scene
-      );
-      b.position.set(x ?? 0, 0.55, z ?? 0);
-      b.material = barrelMat;
+    const barrelPos: [number, number][] = [[4, 12], [-4, 12], [4, -12], [-4, -12], [12, 4], [-12, 4], [12, -4], [-12, -4]];
+    barrelPos.forEach(([x, z], i) => {
+      const b = BABYLON.MeshBuilder.CreateCylinder(`b${i}`, { diameter: 0.75, height: 1.1, tessellation: 8 }, scene);
+      b.position.set(x, 0.55, z);
+      b.material = bm;
     });
   }
 
-  // ── Gun model ─────────────────────────────────────────────────────────────
-  function buildGunModel(scene: BABYLON.Scene, camera: BABYLON.UniversalCamera) {
-    const gunRoot = new BABYLON.Mesh("gunRoot", scene);
+  // ── Gun model ──────────────────────────────────────────────────────────────
+  function buildGun(scene: BABYLON.Scene, cam: BABYLON.UniversalCamera) {
+    const root = new BABYLON.Mesh("gunRoot", scene);
+    const dark = new BABYLON.StandardMaterial("gd", scene);
+    dark.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.11);
+    dark.specularColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+    const wood = new BABYLON.StandardMaterial("gw", scene);
+    wood.diffuseColor = new BABYLON.Color3(0.28, 0.16, 0.08);
 
-    // Body
-    const body = BABYLON.MeshBuilder.CreateBox(
-      "gunBody",
-      { width: 0.08, height: 0.1, depth: 0.38 },
-      scene
-    );
-    const bodyMat = new BABYLON.StandardMaterial("gunBodyMat", scene);
-    bodyMat.diffuseColor = new BABYLON.Color3(0.12, 0.12, 0.12);
-    body.material = bodyMat;
-    body.parent = gunRoot;
-    body.position.set(0, 0, 0);
+    // Slide / receiver
+    const body = BABYLON.MeshBuilder.CreateBox("gbody", { width: 0.085, height: 0.1, depth: 0.38 }, scene);
+    body.material = dark; body.parent = root; body.position.set(0, 0, 0);
 
     // Barrel
-    const barrel = BABYLON.MeshBuilder.CreateCylinder(
-      "barrel",
-      { diameter: 0.035, height: 0.28, tessellation: 8 },
-      scene
-    );
-    barrel.rotation.x = Math.PI / 2;
-    barrel.material = bodyMat;
-    barrel.parent = gunRoot;
-    barrel.position.set(0, 0.02, 0.32);
+    const barrel = BABYLON.MeshBuilder.CreateCylinder("gbarrel", { diameter: 0.036, height: 0.3, tessellation: 8 }, scene);
+    barrel.rotation.x = Math.PI / 2; barrel.material = dark; barrel.parent = root; barrel.position.set(0, 0.018, 0.33);
 
-    // Handle
-    const handle = BABYLON.MeshBuilder.CreateBox(
-      "handle",
-      { width: 0.07, height: 0.14, depth: 0.07 },
-      scene
-    );
-    const handleMat = new BABYLON.StandardMaterial("handleMat", scene);
-    handleMat.diffuseColor = new BABYLON.Color3(0.22, 0.14, 0.08);
-    handle.material = handleMat;
-    handle.parent = gunRoot;
-    handle.position.set(0, -0.1, -0.06);
-    handle.rotation.x = 0.2;
+    // Barrel shroud
+    const shroud = BABYLON.MeshBuilder.CreateCylinder("gshroud", { diameter: 0.055, height: 0.18, tessellation: 8 }, scene);
+    shroud.rotation.x = Math.PI / 2; shroud.material = dark; shroud.parent = root; shroud.position.set(0, 0.018, 0.28);
 
-    // Sight
-    const sight = BABYLON.MeshBuilder.CreateBox(
-      "sight",
-      { width: 0.015, height: 0.025, depth: 0.015 },
-      scene
-    );
-    sight.material = bodyMat;
-    sight.parent = gunRoot;
-    sight.position.set(0, 0.065, 0.14);
+    // Handle / grip
+    const grip = BABYLON.MeshBuilder.CreateBox("ggrip", { width: 0.072, height: 0.15, depth: 0.075 }, scene);
+    grip.material = wood; grip.parent = root; grip.position.set(0, -0.11, -0.06); grip.rotation.x = 0.22;
 
-    // Position gun in FP view
-    gunRoot.parent = camera;
-    gunRoot.position.set(0.22, -0.2, 0.45);
-    gunRoot.rotation.set(0.05, 0.04, 0);
+    // Trigger guard
+    const tg = BABYLON.MeshBuilder.CreateTorus("gtg", { diameter: 0.06, thickness: 0.012, tessellation: 8 }, scene);
+    tg.material = dark; tg.parent = root; tg.position.set(0, -0.045, 0.02); tg.rotation.x = Math.PI / 2;
+
+    // Iron sight (rear)
+    const sightR = BABYLON.MeshBuilder.CreateBox("gsr", { width: 0.022, height: 0.028, depth: 0.012 }, scene);
+    sightR.material = dark; sightR.parent = root; sightR.position.set(0, 0.066, -0.06);
+
+    // Iron sight (front)
+    const sightF = BABYLON.MeshBuilder.CreateBox("gsf", { width: 0.012, height: 0.024, depth: 0.012 }, scene);
+    sightF.material = dark; sightF.parent = root; sightF.position.set(0, 0.066, 0.16);
+
+    // Magazine
+    const mag = BABYLON.MeshBuilder.CreateBox("gmag", { width: 0.065, height: 0.1, depth: 0.055 }, scene);
+    mag.material = dark; mag.parent = root; mag.position.set(0, -0.075, 0.0);
+
+    root.parent = cam;
+    root.position.set(0.21, -0.19, 0.44);
+    root.rotation.set(0.04, 0.03, 0);
+    gunRoot.current = root;
   }
 
   // ── Input ──────────────────────────────────────────────────────────────────
   function setupInput(scene: BABYLON.Scene, canvas: HTMLCanvasElement) {
-    // Keyboard
     scene.onKeyboardObservable.add((info) => {
-      const key = info.event.code.toLowerCase();
+      const k = info.event.code;
       if (info.type === BABYLON.KeyboardEventTypes.KEYDOWN) {
-        keysRef.current[key] = true;
-        if (key === "keyr") tryReload();
+        keys.current[k] = true;
+        if (k === "KeyR") startReload();
       } else {
-        keysRef.current[key] = false;
+        keys.current[k] = false;
       }
     });
 
-    // Pointer lock for mouse look
     canvas.addEventListener("click", () => {
-      if (screenRef.current === "game" && !document.pointerLockElement) {
-        canvas.requestPointerLock();
-      }
+      if (screenRef.current === "game" && !document.pointerLockElement) canvas.requestPointerLock();
     });
 
-    document.addEventListener("pointerlockchange", () => {
-      // pointer lock state changed
-    });
-
-    // Mouse move (pointer lock)
     document.addEventListener("mousemove", (e) => {
-      if (
-        screenRef.current !== "game" ||
-        document.pointerLockElement !== canvas
-      )
-        return;
-      const camera = cameraRef.current;
-      if (!camera) return;
-      const sens = 0.002;
-      camera.rotation.y += e.movementX * sens;
-      camera.rotation.x = Math.max(
-        -Math.PI / 2.2,
-        Math.min(Math.PI / 2.2, camera.rotation.x + e.movementY * sens)
-      );
+      if (screenRef.current !== "game" || document.pointerLockElement !== canvas) return;
+      const cam = cameraRef.current;
+      if (!cam) return;
+      cam.rotation.y += e.movementX * MOUSE_SENS;
+      cam.rotation.x = Math.max(-1.35, Math.min(1.35, cam.rotation.x + e.movementY * MOUSE_SENS));
     });
 
-    // Shoot on click
     canvas.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return;
-      if (screenRef.current !== "game") return;
-      if (document.pointerLockElement !== canvas) return;
-      tryShoot(scene);
+      if (e.button !== 0 || screenRef.current !== "game" || document.pointerLockElement !== canvas) return;
+      shoot(scene);
     });
 
-    // Touch shoot
+    // Touch look + shoot
+    let lastTouch: Touch | null = null;
     canvas.addEventListener("touchstart", (e) => {
-      if (screenRef.current !== "game") return;
       e.preventDefault();
-      tryShoot(scene);
+      if (screenRef.current !== "game") return;
+      lastTouch = e.touches[0] ?? null;
+      shoot(scene);
+    }, { passive: false });
+    canvas.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      if (screenRef.current !== "game") return;
+      const t = e.touches[0];
+      if (!t || !lastTouch) return;
+      const cam = cameraRef.current;
+      if (!cam) return;
+      cam.rotation.y += (t.clientX - lastTouch.clientX) * MOUSE_SENS * 0.6;
+      cam.rotation.x = Math.max(-1.35, Math.min(1.35, cam.rotation.x + (t.clientY - lastTouch.clientY) * MOUSE_SENS * 0.6));
+      lastTouch = t;
     }, { passive: false });
   }
 
   // ── Shoot ──────────────────────────────────────────────────────────────────
-  function tryShoot(scene: BABYLON.Scene) {
-    const gs = gsRef.current;
-    if (gs.phase !== "playing") return;
-    if (reloadingRef.current) return;
-    if (gs.ammo <= 0) {
-      tryReload();
-      return;
-    }
+  function shoot(scene: BABYLON.Scene) {
+    if (phase.current !== "playing") return;
+    if (reloading.current) return;
+    if (ammo.current <= 0) { startReload(); return; }
 
-    // Consume ammo
-    gs.ammo -= 1;
-    syncUi();
+    ammo.current -= 1;
 
     // Muzzle flash
-    const mf = muzzleFlashRef.current;
     const cam = cameraRef.current;
-    if (mf && cam) {
+    const mf = muzzleFlash.current;
+    if (cam && mf) {
       const fwd = cam.getForwardRay().direction;
-      mf.position = cam.position.add(fwd.scale(0.5)).add(new BABYLON.Vector3(0.22, -0.15, 0));
+      mf.position = cam.position.add(fwd.scale(0.55)).add(new BABYLON.Vector3(0.2, -0.12, 0));
       mf.isVisible = true;
-      muzzleFlashTimerRef.current = 0.06;
+      muzzleTimer.current = 0.06;
     }
 
-    // Raycast
-    const camera = cameraRef.current;
-    if (!camera) return;
-    const ray = camera.getForwardRay(200);
-    const hit = scene.pickWithRay(ray, (m) => m.name.startsWith("zbody_"));
-    if (hit?.hit && hit.pickedMesh) {
-      const id = parseInt(hit.pickedMesh.name.split("_")[1] ?? "0", 10);
-      const zombie = zombiesRef.current.find((z) => z.id === id);
-      if (zombie && !zombie.dead) {
-        zombie.hp -= 1;
-        if (zombie.hp <= 0) killZombie(zombie);
+    // Gun kick animation
+    if (gunRoot.current) {
+      gunRoot.current.position.z -= 0.04;
+      gunRoot.current.rotation.x += 0.06;
+    }
+
+    // Raycast hit detection
+    if (cam) {
+      const ray = cam.getForwardRay(200);
+      const hit = scene.pickWithRay(ray, (m) => m.name.startsWith("zbody_"));
+      if (hit?.hit && hit.pickedMesh) {
+        const id = parseInt(hit.pickedMesh.name.split("_")[1] ?? "-1", 10);
+        const z = zombies.current.find((z) => z.id === id);
+        if (z && !z.dead) {
+          z.hp -= 1;
+          if (z.hp <= 0) killZombie(z);
+        }
       }
     }
 
-    // Auto-reload when empty
-    if (gs.ammo === 0) tryReload();
+    if (ammo.current === 0) startReload();
+    pushUi();
   }
 
   // ── Reload ─────────────────────────────────────────────────────────────────
-  function tryReload() {
-    const gs = gsRef.current;
-    if (reloadingRef.current) return;
-    if (gs.ammo === gs.maxAmmo) return;
-    reloadingRef.current = true;
-    reloadTimerRef.current = 0;
-    setReloading(true);
-    setReloadProgress(0);
+  function startReload() {
+    if (reloading.current || ammo.current === MAX_AMMO) return;
+    reloading.current = true;
+    reloadTimer.current = RELOAD_TIME;
+    pushUi();
   }
 
-  // ── Kill zombie ────────────────────────────────────────────────────────────
-  function killZombie(zombie: Zombie) {
-    zombie.dead = true;
-    zombie.root.dispose();
-    const gs = gsRef.current;
-    gs.kills += 1;
-    gs.totalKills += 1;
-    syncUi();
-
-    // Check wave cleared
-    const alive = zombiesRef.current.filter((z) => !z.dead);
-    if (alive.length === 0) {
-      gs.wave += 1;
-      gs.phase = "waveBreak";
-      gs.waveBreakTimer = WAVE_BREAK_DURATION;
-      syncUi();
-    }
+  // ── Kill zombie ─────────────────────────────────────────────────────────────
+  function killZombie(z: ZombieEntity) {
+    z.dead = true;
+    kills.current += 1;
+    // Collapse
+    z.root.position.y = -0.6;
+    z.body.rotation.x = Math.PI / 2;
+    // Fade out after 2s (handled in tick)
+    setTimeout(() => {
+      z.root.dispose();
+    }, 2200);
+    pushUi();
   }
 
   // ── Spawn wave ─────────────────────────────────────────────────────────────
   function spawnWave(scene: BABYLON.Scene) {
-    const gs = gsRef.current;
-    const count = 3 + (gs.wave - 1) * 2;
-    zombiesRef.current = zombiesRef.current.filter((z) => !z.dead);
+    const waveNum = wave.current;
+    const count = 3 + waveNum * 2;
+    const baseHp = ZOMBIE_BASE_HP(waveNum);
+    const baseSpeed = ZOMBIE_BASE_SPEED(waveNum);
+    const half = ARENA / 2 - 2;
 
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2 + Math.random() * 0.5;
-      const dist = 14 + Math.random() * 6;
+      const dist = half * (0.7 + Math.random() * 0.28);
       const x = Math.cos(angle) * dist;
       const z = Math.sin(angle) * dist;
-      const zombie = createZombie(scene, new BABYLON.Vector3(x, 0, z), gs.wave);
-      zombiesRef.current.push(zombie);
+      spawnZombie(scene, x, z, baseHp, baseSpeed + (Math.random() - 0.5) * 0.01);
     }
   }
 
-  // ── Create zombie ──────────────────────────────────────────────────────────
-  function createZombie(
-    scene: BABYLON.Scene,
-    pos: BABYLON.Vector3,
-    wave: number
-  ): Zombie {
-    const id = zombieIdRef.current++;
-    const hp = ZOMBIE_BASE_HP + Math.floor(wave * 0.8);
-    const speed = ZOMBIE_BASE_SPEED + wave * 0.003;
+  function spawnZombie(scene: BABYLON.Scene, x: number, z: number, hp: number, speed: number) {
+    const id = zombieId.current++;
+    const root = new BABYLON.Mesh(`zroot_${id}`, scene);
+    root.position.set(x, 0, z);
 
     // Materials
-    const skinMat = new BABYLON.StandardMaterial(`zSkin${id}`, scene);
-    skinMat.diffuseColor = new BABYLON.Color3(0.28, 0.38, 0.22);
-
-    const shirtMat = new BABYLON.StandardMaterial(`zShirt${id}`, scene);
-    shirtMat.diffuseColor = new BABYLON.Color3(0.18, 0.22, 0.15);
-
-    const pantsMat = new BABYLON.StandardMaterial(`zPants${id}`, scene);
-    pantsMat.diffuseColor = new BABYLON.Color3(0.14, 0.16, 0.12);
-
-    // Root
-    const root = new BABYLON.Mesh(`zroot_${id}`, scene);
-    root.position = pos.clone();
-    root.position.y = 0;
+    const skinMat = new BABYLON.StandardMaterial(`zsk_${id}`, scene);
+    skinMat.diffuseColor = new BABYLON.Color3(0.28, 0.38, 0.18);
+    const clothMat = new BABYLON.StandardMaterial(`zcl_${id}`, scene);
+    clothMat.diffuseColor = new BABYLON.Color3(0.18, 0.22, 0.15);
+    const eyeMat = new BABYLON.StandardMaterial(`ze_${id}`, scene);
+    eyeMat.diffuseColor = new BABYLON.Color3(0.9, 0.1, 0.1);
+    eyeMat.emissiveColor = new BABYLON.Color3(0.6, 0.0, 0.0);
 
     // Body (torso)
-    const body = BABYLON.MeshBuilder.CreateBox(
-      `zbody_${id}`,
-      { width: 0.55, height: 0.7, depth: 0.3 },
-      scene
-    );
-    body.material = shirtMat;
+    const body = BABYLON.MeshBuilder.CreateBox(`zbody_${id}`, { width: 0.55, height: 0.7, depth: 0.3 }, scene);
+    body.material = clothMat;
     body.parent = root;
-    body.position.y = 1.05;
+    body.position.set(0, 1.15, 0);
 
     // Head
-    const head = BABYLON.MeshBuilder.CreateBox(
-      `zhead_${id}`,
-      { width: 0.38, height: 0.38, depth: 0.35 },
-      scene
-    );
+    const head = BABYLON.MeshBuilder.CreateBox(`zhead_${id}`, { width: 0.38, height: 0.38, depth: 0.36 }, scene);
     head.material = skinMat;
     head.parent = root;
-    head.position.y = 1.65;
+    head.position.set(0, 1.72, 0);
 
-    // Eyes (red dots)
-    const eyeMat = new BABYLON.StandardMaterial(`zEye${id}`, scene);
-    eyeMat.diffuseColor = new BABYLON.Color3(1, 0.1, 0.1);
-    eyeMat.emissiveColor = new BABYLON.Color3(0.8, 0, 0);
-    [-0.1, 0.1].forEach((ex, ei) => {
-      const eye = BABYLON.MeshBuilder.CreateSphere(
-        `zeye${id}_${ei}`,
-        { diameter: 0.06 },
-        scene
-      );
-      eye.material = eyeMat;
-      eye.parent = head;
-      eye.position.set(ex, 0.04, 0.18);
-    });
+    // Eyes
+    const eyeL = BABYLON.MeshBuilder.CreateSphere(`zel_${id}`, { diameter: 0.08, segments: 4 }, scene);
+    eyeL.material = eyeMat; eyeL.parent = head; eyeL.position.set(-0.1, 0.04, 0.19);
+    const eyeR = BABYLON.MeshBuilder.CreateSphere(`zer_${id}`, { diameter: 0.08, segments: 4 }, scene);
+    eyeR.material = eyeMat; eyeR.parent = head; eyeR.position.set(0.1, 0.04, 0.19);
 
-    // Left arm
-    const leftArm = BABYLON.MeshBuilder.CreateBox(
-      `zlarm_${id}`,
-      { width: 0.16, height: 0.55, depth: 0.16 },
-      scene
-    );
-    leftArm.material = shirtMat;
-    leftArm.parent = root;
-    leftArm.position.set(-0.37, 1.0, 0);
+    // Arms
+    const lArm = BABYLON.MeshBuilder.CreateBox(`zla_${id}`, { width: 0.18, height: 0.58, depth: 0.18 }, scene);
+    lArm.material = skinMat; lArm.parent = root; lArm.position.set(-0.38, 1.12, 0);
+    const rArm = BABYLON.MeshBuilder.CreateBox(`zra_${id}`, { width: 0.18, height: 0.58, depth: 0.18 }, scene);
+    rArm.material = skinMat; rArm.parent = root; rArm.position.set(0.38, 1.12, 0);
 
-    // Right arm
-    const rightArm = BABYLON.MeshBuilder.CreateBox(
-      `zrarm_${id}`,
-      { width: 0.16, height: 0.55, depth: 0.16 },
-      scene
-    );
-    rightArm.material = shirtMat;
-    rightArm.parent = root;
-    rightArm.position.set(0.37, 1.0, 0);
+    // Legs
+    const lLeg = BABYLON.MeshBuilder.CreateBox(`zll_${id}`, { width: 0.2, height: 0.62, depth: 0.2 }, scene);
+    lLeg.material = clothMat; lLeg.parent = root; lLeg.position.set(-0.16, 0.5, 0);
+    const rLeg = BABYLON.MeshBuilder.CreateBox(`zrl_${id}`, { width: 0.2, height: 0.62, depth: 0.2 }, scene);
+    rLeg.material = clothMat; rLeg.parent = root; rLeg.position.set(0.16, 0.5, 0);
 
-    // Left leg
-    const leftLeg = BABYLON.MeshBuilder.CreateBox(
-      `zlleg_${id}`,
-      { width: 0.2, height: 0.6, depth: 0.2 },
-      scene
-    );
-    leftLeg.material = pantsMat;
-    leftLeg.parent = root;
-    leftLeg.position.set(-0.16, 0.4, 0);
-
-    // Right leg
-    const rightLeg = BABYLON.MeshBuilder.CreateBox(
-      `zrleg_${id}`,
-      { width: 0.2, height: 0.6, depth: 0.2 },
-      scene
-    );
-    rightLeg.material = pantsMat;
-    rightLeg.parent = root;
-    rightLeg.position.set(0.16, 0.4, 0);
-
-    return {
-      id,
-      root,
-      body,
-      head,
-      leftArm,
-      rightArm,
-      leftLeg,
-      rightLeg,
-      hp,
-      speed,
-      animTime: Math.random() * Math.PI * 2,
-      dead: false,
-      attackCooldown: 0,
-    };
+    zombies.current.push({ id, root, body, head, lArm, rArm, lLeg, rLeg, hp, maxHp: hp, speed, animT: Math.random() * Math.PI * 2, dead: false, atkCd: 0 });
   }
 
-  // ── Sync UI ────────────────────────────────────────────────────────────────
-  function syncUi() {
-    setUiState({ ...gsRef.current });
-  }
+  // ── Main tick ──────────────────────────────────────────────────────────────
+  function tick(scene: BABYLON.Scene, dt: number) {
+    const cam = cameraRef.current;
+    if (!cam) return;
 
-  // ── Game loop ──────────────────────────────────────────────────────────────
-  function gameLoop(scene: BABYLON.Scene, dt: number) {
-    const gs = gsRef.current;
-    const camera = cameraRef.current;
-    if (!camera) return;
+    // ── Reload timer ────────────────────────────────────────────────────────
+    if (reloading.current) {
+      reloadTimer.current -= dt;
+      if (reloadTimer.current <= 0) {
+        reloading.current = false;
+        ammo.current = MAX_AMMO;
+      }
+      pushUi();
+    }
 
-    // Reload timer
-    if (reloadingRef.current) {
-      reloadTimerRef.current += dt;
-      const prog = Math.min(reloadTimerRef.current / RELOAD_TIME, 1);
-      setReloadProgress(prog);
-      if (reloadTimerRef.current >= RELOAD_TIME) {
-        reloadingRef.current = false;
-        gs.ammo = gs.maxAmmo;
-        setReloading(false);
-        syncUi();
+    // ── Muzzle flash ────────────────────────────────────────────────────────
+    if (muzzleTimer.current > 0) {
+      muzzleTimer.current -= dt;
+      if (muzzleTimer.current <= 0 && muzzleFlash.current) muzzleFlash.current.isVisible = false;
+    }
+
+    // ── Gun bob / recoil recovery ───────────────────────────────────────────
+    const gr = gunRoot.current;
+    if (gr) {
+      const moving = keys.current["KeyW"] || keys.current["KeyS"] || keys.current["KeyA"] || keys.current["KeyD"];
+      if (moving) gunBobT.current += dt * 8;
+      const bob = moving ? Math.sin(gunBobT.current) * 0.008 : 0;
+      gr.position.x += (0.21 - gr.position.x) * 0.18;
+      gr.position.y += (-0.19 + bob - gr.position.y) * 0.18;
+      gr.position.z += (0.44 - gr.position.z) * 0.18;
+      gr.rotation.x += (0.04 - gr.rotation.x) * 0.18;
+    }
+
+    // ── Damage flash ────────────────────────────────────────────────────────
+    if (damageFlashTimer.current > 0) {
+      damageFlashTimer.current -= dt;
+      if (overlayRef.current) {
+        overlayRef.current.style.opacity = String(Math.max(0, damageFlashTimer.current / 0.3));
       }
     }
 
-    // Muzzle flash
-    if (muzzleFlashTimerRef.current > 0) {
-      muzzleFlashTimerRef.current -= dt;
-      if (muzzleFlashTimerRef.current <= 0 && muzzleFlashRef.current) {
-        muzzleFlashRef.current.isVisible = false;
-      }
-    }
-
-    // Damage flash
-    if (damageFlashTimerRef.current > 0) {
-      damageFlashTimerRef.current -= dt;
-      if (flashRef.current) {
-        const alpha = Math.min(damageFlashTimerRef.current / 0.3, 1) * 0.45;
-        flashRef.current.style.opacity = String(alpha);
-      }
-    } else if (flashRef.current) {
-      flashRef.current.style.opacity = "0";
-    }
-
-    // Wave break
-    if (gs.phase === "waveBreak") {
-      gs.waveBreakTimer -= dt;
-      setUiState({ ...gs });
-      if (gs.waveBreakTimer <= 0) {
-        gs.phase = "playing";
-        gs.kills = 0;
+    // ── Phase: waveBreak ────────────────────────────────────────────────────
+    if (phase.current === "waveBreak") {
+      waveTimer.current -= dt;
+      if (waveTimer.current <= 0) {
+        phase.current = "playing";
         spawnWave(scene);
-        syncUi();
       }
+      pushUi();
       return;
     }
 
-    if (gs.phase !== "playing") return;
+    if (phase.current !== "playing") return;
 
-    // ── Player movement ─────────────────────────────────────────────────
-    const keys = keysRef.current;
-    const yaw = camera.rotation.y;
-    const fwd = new BABYLON.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
-    const right = new BABYLON.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+    // ── Player movement ─────────────────────────────────────────────────────
+    const yaw = cam.rotation.y;
+    const fwdX = Math.sin(yaw), fwdZ = Math.cos(yaw);
+    const rightX = Math.cos(yaw), rightZ = -Math.sin(yaw);
+    let mx = 0, mz = 0;
+    if (keys.current["KeyW"]) { mx += fwdX; mz += fwdZ; }
+    if (keys.current["KeyS"]) { mx -= fwdX; mz -= fwdZ; }
+    if (keys.current["KeyA"]) { mx -= rightX; mz -= rightZ; }
+    if (keys.current["KeyD"]) { mx += rightX; mz += rightZ; }
+    const len = Math.sqrt(mx * mx + mz * mz);
+    if (len > 0) { mx /= len; mz /= len; }
+    const half = ARENA / 2 - 0.5;
+    cam.position.x = Math.max(-half, Math.min(half, cam.position.x + mx * PLAYER_SPEED));
+    cam.position.z = Math.max(-half, Math.min(half, cam.position.z + mz * PLAYER_SPEED));
+    cam.position.y = PLAYER_HEIGHT;
 
-    let moveDir = BABYLON.Vector3.Zero();
-    if (keys["keyw"] || keys["arrowup"]) moveDir = moveDir.add(fwd);
-    if (keys["keys"] || keys["arrowdown"]) moveDir = moveDir.subtract(fwd);
-    if (keys["keyd"] || keys["arrowright"]) moveDir = moveDir.add(right);
-    if (keys["keya"] || keys["arrowleft"]) moveDir = moveDir.subtract(right);
-
-    if (moveDir.lengthSquared() > 0) {
-      moveDir.normalize().scaleInPlace(PLAYER_SPEED);
-      const newPos = camera.position.add(moveDir);
-      // Clamp to arena
-      const half = ARENA_SIZE / 2 - 0.8;
-      newPos.x = Math.max(-half, Math.min(half, newPos.x));
-      newPos.z = Math.max(-half, Math.min(half, newPos.z));
-      newPos.y = PLAYER_HEIGHT;
-      camera.position = newPos;
-      playerPosRef.current = newPos;
-    } else {
-      playerPosRef.current = camera.position.clone();
-    }
-
-    // ── Zombie AI ───────────────────────────────────────────────────────
-    const playerPos = playerPosRef.current;
-    const aliveZombies = zombiesRef.current.filter((z) => !z.dead);
-
-    for (const zombie of aliveZombies) {
-      const zPos = zombie.root.position;
-      const toPlayer = playerPos.subtract(zPos);
-      toPlayer.y = 0;
-      const dist = toPlayer.length();
+    // ── Zombie AI ───────────────────────────────────────────────────────────
+    const alive = zombies.current.filter((z) => !z.dead);
+    for (const z of alive) {
+      const dx = cam.position.x - z.root.position.x;
+      const dz = cam.position.z - z.root.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
 
       // Face player
-      if (dist > 0.01) {
-        const angle = Math.atan2(toPlayer.x, toPlayer.z);
-        zombie.root.rotation.y = angle;
-      }
+      z.root.rotation.y = Math.atan2(dx, dz);
 
-      // Move toward player
-      if (dist > ATTACK_RANGE) {
-        const dir = toPlayer.normalize();
-        zombie.root.position.addInPlace(dir.scale(zombie.speed));
-        // Clamp to arena
-        const half = ARENA_SIZE / 2 - 0.5;
-        zombie.root.position.x = Math.max(-half, Math.min(half, zombie.root.position.x));
-        zombie.root.position.z = Math.max(-half, Math.min(half, zombie.root.position.z));
-      }
+      if (dist > ZOMBIE_ATTACK_RANGE) {
+        // Move toward player
+        z.root.position.x += (dx / dist) * z.speed;
+        z.root.position.z += (dz / dist) * z.speed;
+        z.animT += dt * 5 * (z.speed / ZOMBIE_BASE_SPEED(wave.current));
 
-      // Walk animation
-      zombie.animTime += dt * 6;
-      const swing = Math.sin(zombie.animTime) * 0.5;
-      zombie.leftArm.rotation.x = swing;
-      zombie.rightArm.rotation.x = -swing;
-      zombie.leftLeg.rotation.x = -swing * 0.7;
-      zombie.rightLeg.rotation.x = swing * 0.7;
-      // Zombie lurch
-      zombie.head.rotation.x = 0.25 + Math.sin(zombie.animTime * 0.5) * 0.08;
-      zombie.root.position.y = Math.abs(Math.sin(zombie.animTime)) * 0.04;
-
-      // Attack
-      if (dist <= ATTACK_RANGE) {
-        zombie.attackCooldown -= dt;
-        if (zombie.attackCooldown <= 0) {
-          zombie.attackCooldown = ATTACK_COOLDOWN;
-          gs.hp -= ATTACK_DAMAGE;
-          damageFlashTimerRef.current = 0.35;
-          if (gs.hp <= 0) {
-            gs.hp = 0;
-            gs.phase = "dead";
-            const newHs = Math.max(highScore, gs.totalKills);
-            setHighScore(newHs);
-            localStorage.setItem("zombie_attack_highscore", String(newHs));
+        // Walk animation
+        const swing = Math.sin(z.animT) * 0.45;
+        z.lLeg.rotation.x = swing;
+        z.rLeg.rotation.x = -swing;
+        z.lArm.rotation.x = -swing * 0.6;
+        z.rArm.rotation.x = swing * 0.6;
+        // Zombie lurch — arms raised
+        z.lArm.rotation.z = 0.55;
+        z.rArm.rotation.z = -0.55;
+        z.head.rotation.x = Math.sin(z.animT * 0.5) * 0.08;
+      } else {
+        // Attack
+        z.atkCd -= dt;
+        if (z.atkCd <= 0) {
+          z.atkCd = ZOMBIE_ATTACK_COOLDOWN;
+          hp.current = Math.max(0, hp.current - ZOMBIE_ATTACK_DAMAGE);
+          damageFlashTimer.current = 0.3;
+          if (overlayRef.current) overlayRef.current.style.opacity = "1";
+          if (hp.current <= 0) {
+            phase.current = "dead";
+            const finalKills = kills.current;
+            if (finalKills > best) {
+              setBest(finalKills);
+              localStorage.setItem("za_best", String(finalKills));
+            }
+            pushUi();
             setScreen("dead");
-            document.exitPointerLock();
+            if (document.pointerLockElement) document.exitPointerLock();
+            return;
           }
-          syncUi();
+          pushUi();
         }
+        // Idle sway
+        z.lArm.rotation.z = 0.55 + Math.sin(z.animT * 2) * 0.1;
+        z.rArm.rotation.z = -0.55 - Math.sin(z.animT * 2) * 0.1;
       }
+    }
+
+    // ── Check wave cleared ──────────────────────────────────────────────────
+    if (alive.length === 0 && zombies.current.length > 0) {
+      // All spawned zombies are dead
+      wave.current += 1;
+      phase.current = "waveBreak";
+      waveTimer.current = WAVE_BREAK;
+      zombies.current = [];
+      pushUi();
     }
   }
 
-  // ── Start / Restart ────────────────────────────────────────────────────────
-  const startGame = useCallback(() => {
+  // ── Start / Restart game ───────────────────────────────────────────────────
+  function startGame() {
     const scene = sceneRef.current;
-    const camera = cameraRef.current;
-    if (!scene || !camera) return;
-
-    // Clear zombies
-    zombiesRef.current.forEach((z) => {
-      if (!z.dead) z.root.dispose();
-    });
-    zombiesRef.current = [];
-    zombieIdRef.current = 0;
-
-    // Reset camera
-    camera.position = new BABYLON.Vector3(0, PLAYER_HEIGHT, 0);
-    camera.rotation = new BABYLON.Vector3(0, 0, 0);
+    const cam = cameraRef.current;
+    if (!scene || !cam) return;
 
     // Reset state
-    const fresh: GameState = {
-      hp: 100,
-      maxHp: 100,
-      ammo: MAX_AMMO,
-      maxAmmo: MAX_AMMO,
-      wave: 1,
-      kills: 0,
-      totalKills: 0,
-      phase: "playing",
-      waveBreakTimer: WAVE_BREAK_DURATION,
-    };
-    gsRef.current = fresh;
-    reloadingRef.current = false;
-    reloadTimerRef.current = 0;
-    setReloading(false);
-    setReloadProgress(0);
-    setUiState({ ...fresh });
+    hp.current = MAX_HP;
+    ammo.current = MAX_AMMO;
+    wave.current = 1;
+    kills.current = 0;
+    phase.current = "playing";
+    waveTimer.current = WAVE_BREAK;
+    reloading.current = false;
+    reloadTimer.current = 0;
+    gunBobT.current = 0;
+
+    // Clear old zombies
+    zombies.current.forEach((z) => z.root.dispose());
+    zombies.current = [];
+    zombieId.current = 0;
+
+    // Reset camera
+    cam.position.set(0, PLAYER_HEIGHT, 0);
+    cam.rotation.set(0, 0, 0);
+
+    pushUi();
     setScreen("game");
-    screenRef.current = "game";
+
+    // Request pointer lock
+    const canvas = canvasRef.current;
+    if (canvas) canvas.requestPointerLock();
 
     // Spawn wave 1
     spawnWave(scene);
+  }
 
-    // Request pointer lock
-    setTimeout(() => canvasRef.current?.requestPointerLock(), 100);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <Shell>
       <div style={{ position: "relative", width: "100%", height: "100%" }}>
-        <canvas
-          ref={canvasRef}
-          style={{ width: "100%", height: "100%", display: "block" }}
-        />
+        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
 
         {/* Damage flash overlay */}
-        <div
-          ref={flashRef}
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(220,30,30,1)",
-            opacity: 0,
-            pointerEvents: "none",
-            transition: "opacity 0.05s",
-          }}
-        />
+        <div ref={overlayRef} style={{ position: "absolute", inset: 0, background: "rgba(200,0,0,.35)", opacity: 0, pointerEvents: "none", transition: "opacity .05s" }} />
 
-        {/* HUD */}
-        {screen === "game" && (
-          <Hud
-            state={uiState}
-            reloading={reloading}
-            reloadProgress={reloadProgress}
-            highScore={highScore}
-          />
-        )}
-
-        {/* Start screen */}
-        {screen === "start" && (
-          <StartScreen onStart={startGame} highScore={highScore} />
-        )}
-
-        {/* Game over screen */}
-        {screen === "dead" && (
-          <GameOverScreen
-            kills={uiState.totalKills}
-            wave={uiState.wave}
-            highScore={highScore}
-            onRestart={startGame}
-          />
-        )}
+        {screen === "game" && <Hud ui={ui} best={best} />}
+        {screen === "start" && <StartScreen best={best} onStart={startGame} />}
+        {screen === "dead" && <GameOver kills={kills.current} wave={wave.current} best={best} onRestart={startGame} />}
       </div>
     </Shell>
   );
 }
+
+// ── Helper fns (outside component, no closure needed) ─────────────────────────
+function ZOMBIE_BASE_HP(wave: number) { return 2 + Math.floor(wave * 1.4); }
+function ZOMBIE_BASE_SPEED(wave: number) { return 0.03 + wave * 0.004; }
