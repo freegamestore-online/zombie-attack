@@ -165,7 +165,6 @@ function StartScreen({ best, onStart }: { best: number; onStart: () => void }) {
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
 
   const [screen, setScreen] = useState<"start" | "game" | "dead">("start");
   const [ui, setUi] = useState<UIState>({ hp: MAX_HP, ammo: MAX_AMMO, wave: 1, kills: 0, phase: "playing", waveTimer: WAVE_BREAK, reloading: false, reloadPct: 0 });
@@ -244,11 +243,14 @@ export default function App() {
     cam.minZ = 0.04;
     cam.maxZ = 220;
     cam.fov = 1.08;
-    // Enable collision so moveWithCollisions respects obstacle meshes
+    // FIX: Enable collision on camera so moveWithCollisions respects obstacle meshes
     cam.checkCollisions = true;
-    cam.applyGravity = false; // Y is managed manually
+    cam.applyGravity = false;
+    // Ellipsoid represents the player's physical volume (half-extents).
+    // With camera at y=PLAYER_HEIGHT and offset=(0,0,0) the centre is at eye level;
+    // we shrink it vertically so the bottom just clears the floor.
     cam.ellipsoid = new BABYLON.Vector3(0.45, PLAYER_HEIGHT / 2, 0.45);
-    cam.ellipsoidOffset = new BABYLON.Vector3(0, PLAYER_HEIGHT / 2, 0);
+    cam.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
     cameraRef.current = cam;
 
     // ── Lighting ──────────────────────────────────────────────────────────────
@@ -317,8 +319,9 @@ export default function App() {
       const wall = BABYLON.MeshBuilder.CreateBox(`wall${i}`, { width: d.w, height: H, depth: d.d }, scene);
       wall.position.set(...d.pos);
       wall.material = wm;
-      // Block both player movement and bullet raycasts
+      // FIX: Block player movement AND bullet raycasts
       wall.checkCollisions = true;
+      wall.isPickable = true;
       wall.metadata = { solid: true };
     });
   }
@@ -340,8 +343,9 @@ export default function App() {
       const c = BABYLON.MeshBuilder.CreateBox(`crate${i}`, { width: 1.3, height: 1.3, depth: 1.3 }, scene);
       c.position.set(x, 0.65, z);
       c.material = cm;
-      // Block player movement and bullet raycasts
+      // FIX: Block player movement AND bullet raycasts
       c.checkCollisions = true;
+      c.isPickable = true;
       c.metadata = { solid: true };
     });
 
@@ -353,8 +357,9 @@ export default function App() {
       const b = BABYLON.MeshBuilder.CreateCylinder(`barrel${i}`, { diameter: 0.75, height: 1.1, tessellation: 8 }, scene);
       b.position.set(x, 0.55, z);
       b.material = bm;
-      // Block player movement and bullet raycasts
+      // FIX: Block player movement AND bullet raycasts
       b.checkCollisions = true;
+      b.isPickable = true;
       b.metadata = { solid: true };
     });
   }
@@ -399,16 +404,20 @@ export default function App() {
   }
 
   // ── Input ──────────────────────────────────────────────────────────────────
-  // BUG FIX: Shooting via pointer-lock
-  //   The old code had a `click` listener that requested pointer lock, AND a
-  //   separate `mousedown` listener that called shoot() only when already locked.
-  //   The problem: `mousedown` fires BEFORE `click`. On the very first click the
-  //   lock hasn't been granted yet, so the shoot guard fails silently.
-  //   FIX: Use a single `mousedown` handler:
-  //     • Not locked → request lock (first click = lock only, no shot yet)
-  //     • Already locked → fire immediately
-  //   This makes the first click lock the cursor, and every subsequent click
-  //   fires a shot — matching the UX shown in the HUD tip.
+  //
+  // FIX — Shooting via pointer-lock:
+  //   The root cause was that when pointer lock is ACTIVE the browser redirects
+  //   all mouse events to `document`, NOT to the canvas element.  A listener on
+  //   `canvas.addEventListener("mousedown", …)` therefore never fires while the
+  //   cursor is locked, so clicks during gameplay were silently dropped.
+  //
+  //   Solution: listen on `document` for mousedown.  We then distinguish:
+  //     • pointer lock NOT held → request lock on the canvas (first click)
+  //     • pointer lock IS held  → the player is aiming; fire the gun
+  //
+  //   This means the very first click acquires the lock, and every subsequent
+  //   click while locked fires a shot — exactly the UX described in the HUD.
+  //
   function setupInput(scene: BABYLON.Scene, canvas: HTMLCanvasElement) {
     // Keyboard
     scene.onKeyboardObservable.add((info) => {
@@ -421,17 +430,22 @@ export default function App() {
       }
     });
 
-    // Mouse — single handler for lock + shoot
-    canvas.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || screenRef.current !== "game") return;
+    // ── Mouse: document-level mousedown so it fires even while pointer-locked ──
+    // When pointer lock is active the browser sends mouse events to `document`,
+    // NOT to the canvas — so we must listen here, not on the canvas element.
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (e.button !== 0) return; // left-click only
+      if (screenRef.current !== "game") return;
+
       if (!document.pointerLockElement) {
-        // First click: acquire pointer lock. Shooting starts on the NEXT click.
+        // Not locked yet → acquire lock. Shot fires on the NEXT click.
         canvas.requestPointerLock();
       } else {
-        // Already locked: fire
+        // Already locked → player is aiming, fire the gun.
         shoot(scene);
       }
-    });
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
 
     // Mouse look (only while locked)
     document.addEventListener("mousemove", (e) => {
@@ -464,15 +478,13 @@ export default function App() {
   }
 
   // ── Shoot ──────────────────────────────────────────────────────────────────
-  // BUG FIX: Bullet raycast now stops at solid obstacles/walls.
-  //   The old pickWithRay predicate only matched zombie body meshes (zbody_*),
-  //   so bullets flew straight through crates and barrels.
-  //   FIX: The predicate accepts ANY pickable mesh that is either a zombie body
-  //   OR a solid obstacle (metadata.solid === true). After the pick we check
-  //   WHAT was hit:
-  //     • zbody_* → damage the zombie
-  //     • anything else (crate/barrel/wall) → bullet stops, no damage
-  //   This means obstacles correctly block bullets.
+  //
+  // FIX — Bullet raycast stops at solid obstacles:
+  //   pickWithRay predicate accepts BOTH zombie bodies (zbody_*) AND any mesh
+  //   with metadata.solid === true (walls, crates, barrels).  The pick returns
+  //   the CLOSEST hit, so if a crate is between the player and a zombie the
+  //   crate is returned first and no damage is dealt — the bullet is blocked.
+  //
   function shoot(scene: BABYLON.Scene) {
     if (phase.current !== "playing") return;
     if (reloading.current) return;
@@ -484,47 +496,39 @@ export default function App() {
     const cam = cameraRef.current;
     const mf = muzzleFlash.current;
     if (cam && mf) {
-      const fwd = cam.getForwardRay().direction;
-      mf.position = cam.position.add(fwd.scale(0.55)).add(new BABYLON.Vector3(0.2, -0.12, 0));
+      const fwd = cam.getForwardRay(1).direction;
+      mf.position.copyFrom(cam.position).addInPlace(fwd.scale(0.7)).addInPlace(new BABYLON.Vector3(0.18, -0.12, 0));
       mf.isVisible = true;
-      muzzleTimer.current = 0.06;
+      muzzleTimer.current = 0.07;
     }
 
-    // Gun kick
-    if (gunRoot.current) {
-      gunRoot.current.position.z -= 0.04;
-      gunRoot.current.rotation.x += 0.06;
-    }
+    // Build ray from camera centre along its forward direction
+    if (!cam) { pushUi(); return; }
+    const ray = cam.getForwardRay(200);
 
-    // Raycast: pick the FIRST mesh that is either a zombie body or a solid obstacle.
-    // Solid obstacles (crate/barrel/wall) have metadata.solid === true.
-    // Zombie bodies are named zbody_<id>.
-    // Gun parts, the muzzle flash, the ground, zombie sub-parts etc. are excluded.
-    if (cam) {
-      const ray = cam.getForwardRay(200);
-      const hit = scene.pickWithRay(ray, (m) => {
-        if (!m.isEnabled() || !m.isPickable) return false;
-        // Accept zombie bodies
-        if (m.name.startsWith("zbody_")) return true;
-        // Accept solid obstacles (walls, crates, barrels)
-        if (m.metadata && (m.metadata as { solid?: boolean }).solid === true) return true;
-        return false;
-      });
+    // Predicate: accept zombie bodies AND solid obstacles so bullets stop at walls/crates
+    const hit = scene.pickWithRay(ray, (m) => {
+      if (!m.isEnabled() || !m.isPickable) return false;
+      // Zombie torso
+      if (m.name.startsWith("zbody_")) return true;
+      // Solid world geometry (walls, crates, barrels)
+      if (m.metadata && (m.metadata as { solid?: boolean }).solid === true) return true;
+      return false;
+    });
 
-      if (hit?.hit && hit.pickedMesh) {
-        const name = hit.pickedMesh.name;
-        if (name.startsWith("zbody_")) {
-          // Hit a zombie — parse its id and apply damage
-          const idStr = name.split("_")[1];
-          const id = idStr !== undefined ? parseInt(idStr, 10) : -1;
-          const z = zombies.current.find((zz) => zz.id === id);
-          if (z && !z.dead) {
-            z.hp -= 1;
-            if (z.hp <= 0) killZombie(z);
-          }
+    if (hit?.hit && hit.pickedMesh) {
+      const name = hit.pickedMesh.name;
+      if (name.startsWith("zbody_")) {
+        // Hit a zombie — extract id and deal damage
+        const idStr = name.slice("zbody_".length);
+        const zid = parseInt(idStr, 10);
+        const z = zombies.current.find((z) => z.id === zid);
+        if (z && !z.dead) {
+          z.hp -= 1;
+          if (z.hp <= 0) killZombie(z);
         }
-        // else: hit a solid obstacle — bullet stops, no damage (intended)
       }
+      // else: hit a solid obstacle — bullet stops, no damage (correct behaviour)
     }
 
     if (ammo.current === 0) startReload();
@@ -539,238 +543,211 @@ export default function App() {
     pushUi();
   }
 
-  // ── Kill zombie ─────────────────────────────────────────────────────────────
+  // ── Kill zombie ────────────────────────────────────────────────────────────
   function killZombie(z: ZombieEntity) {
     z.dead = true;
     kills.current += 1;
-    z.root.position.y = -0.6;
-    z.body.rotation.x = Math.PI / 2;
-    setTimeout(() => { z.root.dispose(); }, 2200);
-    pushUi();
+    if (kills.current > best) {
+      setBest(kills.current);
+      localStorage.setItem("za_best", String(kills.current));
+    }
+    // Sink into the ground then dispose
+    const sinkInterval = setInterval(() => {
+      z.root.position.y -= 0.04;
+      if (z.root.position.y < -3) {
+        clearInterval(sinkInterval);
+        z.root.dispose();
+        zombies.current = zombies.current.filter((x) => x.id !== z.id);
+      }
+    }, 30);
   }
 
   // ── Spawn wave ─────────────────────────────────────────────────────────────
   function spawnWave(scene: BABYLON.Scene) {
-    const waveNum = wave.current;
-    const count = 3 + waveNum * 2;
-    const baseHp = ZOMBIE_BASE_HP(waveNum);
-    const baseSpd = ZOMBIE_BASE_SPEED(waveNum);
+    const count = 3 + wave.current * 2;
+    const hp_val = ZOMBIE_BASE_HP(wave.current);
+    const spd = ZOMBIE_BASE_SPEED(wave.current);
     const half = ARENA / 2 - 2;
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2 + Math.random() * 0.5;
-      const dist = half * (0.7 + Math.random() * 0.28);
-      const x = Math.cos(angle) * dist;
-      const z = Math.sin(angle) * dist;
-      spawnZombie(scene, x, z, baseHp, baseSpd + (Math.random() - 0.5) * 0.01);
+      const r = half * (0.7 + Math.random() * 0.28);
+      const x = Math.cos(angle) * r;
+      const z = Math.sin(angle) * r;
+      spawnZombie(scene, x, z, hp_val, spd);
     }
   }
 
-  // ── Spawn single zombie ────────────────────────────────────────────────────
-  function spawnZombie(scene: BABYLON.Scene, x: number, z: number, hpVal: number, speed: number) {
+  // ── Spawn one zombie ───────────────────────────────────────────────────────
+  function spawnZombie(scene: BABYLON.Scene, x: number, z: number, hpVal: number, spd: number) {
     const id = zombieId.current++;
     const root = new BABYLON.Mesh(`zroot_${id}`, scene);
     root.position.set(x, 0, z);
 
-    const skinMat = new BABYLON.StandardMaterial(`zsk_${id}`, scene);
-    skinMat.diffuseColor = new BABYLON.Color3(0.28, 0.38, 0.18);
-    const clothMat = new BABYLON.StandardMaterial(`zcl_${id}`, scene);
-    clothMat.diffuseColor = new BABYLON.Color3(0.18, 0.22, 0.15);
-    const eyeMat = new BABYLON.StandardMaterial(`zey_${id}`, scene);
-    eyeMat.diffuseColor = new BABYLON.Color3(0.9, 0.1, 0.05);
-    eyeMat.emissiveColor = new BABYLON.Color3(0.6, 0.05, 0.02);
+    const zm = new BABYLON.StandardMaterial(`zm_${id}`, scene);
+    zm.diffuseColor = new BABYLON.Color3(0.22, 0.38, 0.18);
+    const skinM = new BABYLON.StandardMaterial(`zsk_${id}`, scene);
+    skinM.diffuseColor = new BABYLON.Color3(0.55, 0.72, 0.42);
 
     // Body (named zbody_<id> — this is what the raycast hits)
     const body = BABYLON.MeshBuilder.CreateBox(`zbody_${id}`, { width: 0.55, height: 0.7, depth: 0.3 }, scene);
-    body.material = clothMat;
-    body.parent = root;
-    body.position.y = 1.1;
+    body.material = zm; body.parent = root; body.position.y = 1.05;
+    // Zombie body mesh must NOT block player movement (only raycast hits)
+    body.checkCollisions = false;
+    body.isPickable = true;
 
     // Head
-    const head = BABYLON.MeshBuilder.CreateBox(`zhead_${id}`, { width: 0.42, height: 0.42, depth: 0.38 }, scene);
-    head.material = skinMat;
-    head.parent = root;
-    head.position.y = 1.67;
-
-    // Eyes
-    const eyeL = BABYLON.MeshBuilder.CreateSphere(`zeL_${id}`, { diameter: 0.09, segments: 4 }, scene);
-    eyeL.material = eyeMat; eyeL.parent = head; eyeL.position.set(-0.1, 0.04, -0.19);
-    const eyeR = BABYLON.MeshBuilder.CreateSphere(`zeR_${id}`, { diameter: 0.09, segments: 4 }, scene);
-    eyeR.material = eyeMat; eyeR.parent = head; eyeR.position.set(0.1, 0.04, -0.19);
+    const head = BABYLON.MeshBuilder.CreateSphere(`zhead_${id}`, { diameter: 0.38, segments: 6 }, scene);
+    head.material = skinM; head.parent = root; head.position.y = 1.62;
+    head.checkCollisions = false; head.isPickable = false;
 
     // Arms
-    const lArm = BABYLON.MeshBuilder.CreateBox(`zlA_${id}`, { width: 0.18, height: 0.6, depth: 0.18 }, scene);
-    lArm.material = skinMat; lArm.parent = root; lArm.position.set(-0.38, 1.1, 0);
-    const rArm = BABYLON.MeshBuilder.CreateBox(`zrA_${id}`, { width: 0.18, height: 0.6, depth: 0.18 }, scene);
-    rArm.material = skinMat; rArm.parent = root; rArm.position.set(0.38, 1.1, 0);
+    const lArm = BABYLON.MeshBuilder.CreateBox(`zlarm_${id}`, { width: 0.18, height: 0.55, depth: 0.18 }, scene);
+    lArm.material = zm; lArm.parent = root; lArm.position.set(-0.37, 1.05, 0);
+    lArm.checkCollisions = false; lArm.isPickable = false;
+    const rArm = BABYLON.MeshBuilder.CreateBox(`zrarm_${id}`, { width: 0.18, height: 0.55, depth: 0.18 }, scene);
+    rArm.material = zm; rArm.parent = root; rArm.position.set(0.37, 1.05, 0);
+    rArm.checkCollisions = false; rArm.isPickable = false;
 
     // Legs
-    const lLeg = BABYLON.MeshBuilder.CreateBox(`zlL_${id}`, { width: 0.22, height: 0.65, depth: 0.22 }, scene);
-    lLeg.material = clothMat; lLeg.parent = root; lLeg.position.set(-0.16, 0.42, 0);
-    const rLeg = BABYLON.MeshBuilder.CreateBox(`zrL_${id}`, { width: 0.22, height: 0.65, depth: 0.22 }, scene);
-    rLeg.material = clothMat; rLeg.parent = root; rLeg.position.set(0.16, 0.42, 0);
+    const lLeg = BABYLON.MeshBuilder.CreateBox(`zlleg_${id}`, { width: 0.22, height: 0.55, depth: 0.22 }, scene);
+    lLeg.material = zm; lLeg.parent = root; lLeg.position.set(-0.15, 0.27, 0);
+    lLeg.checkCollisions = false; lLeg.isPickable = false;
+    const rLeg = BABYLON.MeshBuilder.CreateBox(`zrleg_${id}`, { width: 0.22, height: 0.55, depth: 0.22 }, scene);
+    rLeg.material = zm; rLeg.parent = root; rLeg.position.set(0.15, 0.27, 0);
+    rLeg.checkCollisions = false; rLeg.isPickable = false;
 
-    zombies.current.push({
-      id, root, body, head, lArm, rArm, lLeg, rLeg,
-      hp: hpVal, maxHp: hpVal, speed, animT: Math.random() * Math.PI * 2,
-      dead: false, atkCd: 0,
-    });
+    zombies.current.push({ id, root, body, head, lArm, rArm, lLeg, rLeg, hp: hpVal, maxHp: hpVal, speed: spd, animT: Math.random() * Math.PI * 2, dead: false, atkCd: 0 });
   }
 
-  // ── Game tick ─────────────────────────────────────────────────────────────
+  // ── Per-frame tick ─────────────────────────────────────────────────────────
   function tick(scene: BABYLON.Scene, dt: number) {
     const cam = cameraRef.current;
+    if (!cam) return;
 
-    // Muzzle flash timer
-    if (muzzleTimer.current > 0) {
-      muzzleTimer.current -= dt;
-      if (muzzleTimer.current <= 0 && muzzleFlash.current) muzzleFlash.current.isVisible = false;
-    }
-
-    // Damage flash overlay
-    if (damageFlashTimer.current > 0) {
-      damageFlashTimer.current -= dt;
-      if (overlayRef.current) {
-        overlayRef.current.style.opacity = String(Math.max(0, damageFlashTimer.current / 0.35));
-      }
-    }
-
-    // Reload timer
+    // ── Reload timer ──────────────────────────────────────────────────────────
     if (reloading.current) {
       reloadTimer.current -= dt;
       if (reloadTimer.current <= 0) {
         reloading.current = false;
         ammo.current = MAX_AMMO;
-        pushUi();
       }
+      pushUi();
     }
 
-    // ── Wave-break phase ────────────────────────────────────────────────────
+    // ── Wave phase ────────────────────────────────────────────────────────────
     if (phase.current === "waveBreak") {
       waveTimer.current -= dt;
       if (waveTimer.current <= 0) {
         phase.current = "playing";
         spawnWave(scene);
-        pushUi();
-      } else {
-        // throttle UI updates during break
-        setUi((prev) => ({ ...prev, waveTimer: waveTimer.current }));
       }
-      return;
+      pushUi();
     }
 
-    if (phase.current === "dead") return;
-
-    // ── Player movement ─────────────────────────────────────────────────────
-    // BUG FIX: Use moveWithCollisions instead of direct position assignment.
-    //   Old code: cam.position = cam.position.add(move)
-    //   This bypassed Babylon's collision system entirely.
-    //   FIX: cam.moveWithCollisions(move) — the engine then tests the camera's
-    //   ellipsoid against every mesh that has checkCollisions = true, so
-    //   crates/barrels/walls stop the player.
-    if (cam) {
-      const fwd = cam.getForwardRay().direction;
-      const flatFwd = new BABYLON.Vector3(fwd.x, 0, fwd.z).normalize();
-      const right = BABYLON.Vector3.Cross(flatFwd, BABYLON.Vector3.Up()).normalize();
-
-      let move = BABYLON.Vector3.Zero();
-      if (keys.current["KeyW"]) move = move.add(flatFwd);
-      if (keys.current["KeyS"]) move = move.subtract(flatFwd);
-      if (keys.current["KeyA"]) move = move.subtract(right);
-      if (keys.current["KeyD"]) move = move.add(right);
-
-      if (move.lengthSquared() > 0) {
-        move = move.normalize().scale(PLAYER_SPEED);
-        // moveWithCollisions handles obstacle blocking
-        cam.moveWithCollisions(move);
-        // Clamp to arena bounds as a safety net
-        const half = ARENA / 2 - 0.5;
-        cam.position.x = Math.max(-half, Math.min(half, cam.position.x));
-        cam.position.z = Math.max(-half, Math.min(half, cam.position.z));
-      }
-      // Lock Y so player doesn't fall through ground
-      cam.position.y = PLAYER_HEIGHT;
-
-      // Gun bob
-      if (move.lengthSquared() > 0) {
-        gunBobT.current += dt * 8;
-        const bobY = Math.sin(gunBobT.current) * 0.012;
-        const bobX = Math.cos(gunBobT.current * 0.5) * 0.006;
-        if (gunRoot.current) {
-          gunRoot.current.position.y = -0.19 + bobY;
-          gunRoot.current.position.x = 0.21 + bobX;
-        }
-      }
-      // Gun kick return
-      if (gunRoot.current) {
-        gunRoot.current.position.z += (0.44 - gunRoot.current.position.z) * 0.22;
-        gunRoot.current.rotation.x += (0.04 - gunRoot.current.rotation.x) * 0.18;
-      }
-    }
-
-    // ── Zombie AI ───────────────────────────────────────────────────────────
-    const playerPos = cam ? cam.position : new BABYLON.Vector3(0, PLAYER_HEIGHT, 0);
-    const living = zombies.current.filter((z) => !z.dead);
-
-    for (const z of living) {
-      // Animate
-      z.animT += dt * 4;
-      z.lArm.rotation.x = Math.sin(z.animT) * 0.6 + 0.4;
-      z.rArm.rotation.x = -Math.sin(z.animT) * 0.6 + 0.4;
-      z.lLeg.rotation.x = Math.sin(z.animT) * 0.45;
-      z.rLeg.rotation.x = -Math.sin(z.animT) * 0.45;
-      z.head.rotation.y = Math.sin(z.animT * 0.3) * 0.12;
-
-      // Move toward player
-      const toPlayer = playerPos.subtract(z.root.position);
-      toPlayer.y = 0;
-      const dist = toPlayer.length();
-
-      if (dist > 0.1) {
-        const dir = toPlayer.normalize();
-        z.root.position.addInPlace(dir.scale(z.speed));
-        z.root.lookAt(playerPos, 0, 0, 0);
-        z.root.rotation.y += Math.PI;
-      }
-
-      // Attack
-      if (z.atkCd > 0) z.atkCd -= dt;
-      if (dist < ZOMBIE_ATTACK_RANGE && z.atkCd <= 0) {
-        hp.current = Math.max(0, hp.current - ZOMBIE_ATTACK_DAMAGE);
-        z.atkCd = ZOMBIE_ATTACK_COOLDOWN;
-        damageFlashTimer.current = 0.35;
-        if (overlayRef.current) overlayRef.current.style.opacity = "1";
-        pushUi();
-        if (hp.current <= 0) {
-          phase.current = "dead";
-          const newBest = Math.max(best, kills.current);
-          if (kills.current > best) {
-            setBest(newBest);
-            localStorage.setItem("za_best", String(newBest));
-          }
-          if (document.pointerLockElement) document.exitPointerLock();
-          setScreen("dead");
-          pushUi();
-          return;
-        }
-      }
-    }
-
-    // ── Check wave clear ────────────────────────────────────────────────────
-    if (living.length === 0 && zombies.current.length > 0) {
+    // ── Check wave cleared ────────────────────────────────────────────────────
+    if (phase.current === "playing" && zombies.current.length === 0) {
       wave.current += 1;
       phase.current = "waveBreak";
       waveTimer.current = WAVE_BREAK;
-      zombies.current = [];
+      ammo.current = MAX_AMMO;
+      reloading.current = false;
       pushUi();
+    }
+
+    // ── Muzzle flash ──────────────────────────────────────────────────────────
+    if (muzzleTimer.current > 0) {
+      muzzleTimer.current -= dt;
+      if (muzzleTimer.current <= 0 && muzzleFlash.current) muzzleFlash.current.isVisible = false;
+    }
+
+    // ── Damage flash ──────────────────────────────────────────────────────────
+    if (damageFlashTimer.current > 0) damageFlashTimer.current -= dt;
+
+    // ── Player movement via moveWithCollisions ─────────────────────────────────
+    //
+    // FIX: cam.moveWithCollisions() is the correct Babylon API to move the
+    // camera while respecting checkCollisions on both the camera and meshes.
+    // We build a world-space movement vector from WASD input projected along
+    // the camera's yaw (Y-rotation), keeping Y=0 so the player stays on the
+    // floor.  The engine then slides the camera's collision ellipsoid against
+    // any mesh that has checkCollisions=true (walls, crates, barrels, ground).
+    //
+    const k = keys.current;
+    const yaw = cam.rotation.y;
+    const fwdX = Math.sin(yaw), fwdZ = Math.cos(yaw);
+    const rightX = Math.cos(yaw), rightZ = -Math.sin(yaw);
+    let mx = 0, mz = 0;
+    if (k["KeyW"] || k["ArrowUp"])    { mx += fwdX;  mz += fwdZ; }
+    if (k["KeyS"] || k["ArrowDown"])  { mx -= fwdX;  mz -= fwdZ; }
+    if (k["KeyA"] || k["ArrowLeft"])  { mx -= rightX; mz -= rightZ; }
+    if (k["KeyD"] || k["ArrowRight"]) { mx += rightX; mz += rightZ; }
+    const len = Math.sqrt(mx * mx + mz * mz);
+    if (len > 0) {
+      const spd = PLAYER_SPEED;
+      const move = new BABYLON.Vector3((mx / len) * spd, 0, (mz / len) * spd);
+      // moveWithCollisions slides against meshes with checkCollisions=true
+      cam.moveWithCollisions(move);
+      // Clamp Y to stay on the ground plane (no gravity needed)
+      cam.position.y = PLAYER_HEIGHT;
+      gunBobT.current += dt * 8;
+    }
+
+    // ── Gun bob ───────────────────────────────────────────────────────────────
+    const gr = gunRoot.current;
+    if (gr) {
+      gr.position.y = -0.19 + Math.sin(gunBobT.current) * 0.008;
+      gr.position.x = 0.21 + Math.cos(gunBobT.current * 0.5) * 0.004;
+    }
+
+    // ── Zombie AI ─────────────────────────────────────────────────────────────
+    const aliveZombies = zombies.current.filter((z) => !z.dead);
+    for (const z of aliveZombies) {
+      const dx = cam.position.x - z.root.position.x;
+      const dz = cam.position.z - z.root.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      // Face player
+      z.root.rotation.y = Math.atan2(dx, dz);
+
+      // Animate limbs
+      z.animT += dt * 4;
+      const swing = Math.sin(z.animT) * 0.5;
+      z.lArm.rotation.x = swing + 0.6;
+      z.rArm.rotation.x = -swing + 0.6;
+      z.lLeg.rotation.x = -swing * 0.6;
+      z.rLeg.rotation.x = swing * 0.6;
+
+      if (dist > ZOMBIE_ATTACK_RANGE) {
+        // Move toward player
+        const nx = dx / dist, nz = dz / dist;
+        z.root.position.x += nx * z.speed;
+        z.root.position.z += nz * z.speed;
+      } else {
+        // Attack
+        z.atkCd -= dt;
+        if (z.atkCd <= 0) {
+          z.atkCd = ZOMBIE_ATTACK_COOLDOWN;
+          hp.current = Math.max(0, hp.current - ZOMBIE_ATTACK_DAMAGE);
+          damageFlashTimer.current = 0.25;
+          if (hp.current === 0) {
+            phase.current = "dead";
+            if (document.pointerLockElement) document.exitPointerLock();
+            setScreen("dead");
+          }
+          pushUi();
+        }
+      }
+    }
+
+    // ── Damage vignette ───────────────────────────────────────────────────────
+    const vign = document.getElementById("za-vignette");
+    if (vign) {
+      vign.style.opacity = damageFlashTimer.current > 0 ? "1" : "0";
     }
   }
 
-  // ── Start / restart game ───────────────────────────────────────────────────
+  // ── Start / Restart game ───────────────────────────────────────────────────
   function startGame() {
-    const scene = sceneRef.current;
-    const cam = cameraRef.current;
-    const canvas = canvasRef.current;
-
     // Reset state
     hp.current = MAX_HP;
     ammo.current = MAX_AMMO;
@@ -781,43 +758,48 @@ export default function App() {
     reloading.current = false;
     reloadTimer.current = 0;
     gunBobT.current = 0;
-    muzzleTimer.current = 0;
     damageFlashTimer.current = 0;
-    if (overlayRef.current) overlayRef.current.style.opacity = "0";
+    muzzleTimer.current = 0;
 
-    // Clear zombies
-    zombies.current.forEach((z) => { try { z.root.dispose(); } catch (_) { /* ignore */ } });
+    // Clear existing zombies
+    for (const z of zombies.current) z.root.dispose();
     zombies.current = [];
-    zombieId.current = 0;
 
     // Reset camera
+    const cam = cameraRef.current;
     if (cam) {
       cam.position.set(0, PLAYER_HEIGHT, 0);
       cam.rotation.set(0, 0, 0);
     }
 
     setScreen("game");
+    screenRef.current = "game";
     pushUi();
 
-    // Request pointer lock
+    // Acquire pointer lock and spawn first wave
+    const canvas = canvasRef.current;
     if (canvas) canvas.requestPointerLock();
-
-    // Spawn first wave
+    const scene = sceneRef.current;
     if (scene) spawnWave(scene);
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <Shell>
-      <div style={{ position: "relative", width: "100%", height: "100%", background: "#000", overflow: "hidden" }}>
+      <div style={{ position: "relative", width: "100%", height: "100dvh", overflow: "hidden", background: "#000" }}>
         <canvas
           ref={canvasRef}
-          style={{ display: "block", width: "100%", height: "100%", touchAction: "none" }}
+          style={{ display: "block", width: "100%", height: "100%", outline: "none" }}
+          tabIndex={0}
         />
-        {/* Red damage flash overlay */}
+        {/* Damage vignette */}
         <div
-          ref={overlayRef}
-          style={{ position: "absolute", inset: 0, background: "rgba(180,0,0,.45)", pointerEvents: "none", opacity: 0, transition: "opacity .05s" }}
+          id="za-vignette"
+          style={{
+            position: "absolute", inset: 0, pointerEvents: "none",
+            background: "radial-gradient(ellipse at center, transparent 40%, rgba(220,20,20,0.72) 100%)",
+            opacity: 0, transition: "opacity 0.08s",
+          }}
         />
         {screen === "game" && <Hud ui={ui} best={best} locked={pointerLocked} />}
         {screen === "start" && <StartScreen best={best} onStart={startGame} />}
