@@ -1,6 +1,19 @@
+import "@babylonjs/core/Collisions/collisionCoordinator";
+import "@babylonjs/core/Culling/ray";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Color4 } from "@babylonjs/core/Maths/math.color";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import { Engine } from "@babylonjs/core/Engines/engine";
+import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+import { KeyboardEventTypes } from "@babylonjs/core/Events/keyboardEvents";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+import { Scene } from "@babylonjs/core/scene";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { useRef, useEffect, useState, useCallback } from "react";
 import { Shell } from "./components/Shell";
-import * as BABYLON from "@babylonjs/core";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ARENA = 44;
@@ -21,13 +34,13 @@ function ZOMBIE_BASE_SPEED(waveNum: number) { return 0.03 + waveNum * 0.004; }
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface ZombieEntity {
   id: number;
-  root: BABYLON.Mesh;
-  body: BABYLON.Mesh;
-  head: BABYLON.Mesh;
-  lArm: BABYLON.Mesh;
-  rArm: BABYLON.Mesh;
-  lLeg: BABYLON.Mesh;
-  rLeg: BABYLON.Mesh;
+  root: Mesh;
+  body: Mesh;
+  head: Mesh;
+  lArm: Mesh;
+  rArm: Mesh;
+  lLeg: Mesh;
+  rLeg: Mesh;
   hp: number;
   maxHp: number;
   speed: number;
@@ -158,7 +171,7 @@ function StartScreen({ best, onStart }: { best: number; onStart: () => void }) {
 }
 
 // ─── Zombie builder (pure, no hooks) ─────────────────────────────────────────
-function spawnZombie(scene: BABYLON.Scene, id: number, waveNum: number): ZombieEntity {
+function spawnZombie(scene: Scene, id: number, waveNum: number): ZombieEntity {
   const half = ARENA / 2 - 2;
   const side = Math.floor(Math.random() * 4);
   let sx = 0, sz = 0;
@@ -167,50 +180,50 @@ function spawnZombie(scene: BABYLON.Scene, id: number, waveNum: number): ZombieE
   else if (side === 2) { sx = half; sz = (Math.random() - 0.5) * ARENA; }
   else { sx = -half; sz = (Math.random() - 0.5) * ARENA; }
 
-  const root = new BABYLON.Mesh(`zroot_${id}`, scene);
+  const root = new Mesh(`zroot_${id}`, scene);
   root.position.set(sx, 0, sz);
 
-  const zm = new BABYLON.StandardMaterial(`zm_${id}`, scene);
-  zm.diffuseColor = new BABYLON.Color3(0.22, 0.38, 0.18);
-  zm.specularColor = BABYLON.Color3.Black();
+  const zm = new StandardMaterial(`zm_${id}`, scene);
+  zm.diffuseColor = new Color3(0.22, 0.38, 0.18);
+  zm.specularColor = Color3.Black();
 
-  const skinM = new BABYLON.StandardMaterial(`zskin_${id}`, scene);
-  skinM.diffuseColor = new BABYLON.Color3(0.55, 0.48, 0.38);
-  skinM.specularColor = BABYLON.Color3.Black();
+  const skinM = new StandardMaterial(`zskin_${id}`, scene);
+  skinM.diffuseColor = new Color3(0.55, 0.48, 0.38);
+  skinM.specularColor = Color3.Black();
 
   // Body
-  const body = BABYLON.MeshBuilder.CreateBox(`zbody_${id}`, { width: 0.6, height: 0.8, depth: 0.35 }, scene);
+  const body = MeshBuilder.CreateBox(`zbody_${id}`, { width: 0.6, height: 0.8, depth: 0.35 }, scene);
   body.material = zm;
   body.parent = root;
   body.position.y = 1.1;
   body.isPickable = true;
 
   // Head
-  const head = BABYLON.MeshBuilder.CreateBox(`zhead_${id}`, { width: 0.42, height: 0.42, depth: 0.42 }, scene);
+  const head = MeshBuilder.CreateBox(`zhead_${id}`, { width: 0.42, height: 0.42, depth: 0.42 }, scene);
   head.material = skinM;
   head.parent = root;
   head.position.y = 1.72;
   head.isPickable = false;
 
   // Eyes
-  const eyeM = new BABYLON.StandardMaterial(`zeye_${id}`, scene);
-  eyeM.diffuseColor = new BABYLON.Color3(0.9, 0.1, 0.05);
-  eyeM.emissiveColor = new BABYLON.Color3(0.6, 0.0, 0.0);
-  const eyeL = BABYLON.MeshBuilder.CreateSphere(`zeL_${id}`, { diameter: 0.09, segments: 4 }, scene);
+  const eyeM = new StandardMaterial(`zeye_${id}`, scene);
+  eyeM.diffuseColor = new Color3(0.9, 0.1, 0.05);
+  eyeM.emissiveColor = new Color3(0.6, 0.0, 0.0);
+  const eyeL = MeshBuilder.CreateSphere(`zeL_${id}`, { diameter: 0.09, segments: 4 }, scene);
   eyeL.material = eyeM; eyeL.parent = head; eyeL.position.set(-0.1, 0.05, 0.21); eyeL.isPickable = false;
-  const eyeR = BABYLON.MeshBuilder.CreateSphere(`zeR_${id}`, { diameter: 0.09, segments: 4 }, scene);
+  const eyeR = MeshBuilder.CreateSphere(`zeR_${id}`, { diameter: 0.09, segments: 4 }, scene);
   eyeR.material = eyeM; eyeR.parent = head; eyeR.position.set(0.1, 0.05, 0.21); eyeR.isPickable = false;
 
   // Arms
-  const lArm = BABYLON.MeshBuilder.CreateBox(`zlA_${id}`, { width: 0.18, height: 0.65, depth: 0.18 }, scene);
+  const lArm = MeshBuilder.CreateBox(`zlA_${id}`, { width: 0.18, height: 0.65, depth: 0.18 }, scene);
   lArm.material = zm; lArm.parent = root; lArm.position.set(-0.42, 1.1, 0); lArm.isPickable = false;
-  const rArm = BABYLON.MeshBuilder.CreateBox(`zrA_${id}`, { width: 0.18, height: 0.65, depth: 0.18 }, scene);
+  const rArm = MeshBuilder.CreateBox(`zrA_${id}`, { width: 0.18, height: 0.65, depth: 0.18 }, scene);
   rArm.material = zm; rArm.parent = root; rArm.position.set(0.42, 1.1, 0); rArm.isPickable = false;
 
   // Legs
-  const lLeg = BABYLON.MeshBuilder.CreateBox(`zlL_${id}`, { width: 0.2, height: 0.65, depth: 0.2 }, scene);
+  const lLeg = MeshBuilder.CreateBox(`zlL_${id}`, { width: 0.2, height: 0.65, depth: 0.2 }, scene);
   lLeg.material = zm; lLeg.parent = root; lLeg.position.set(-0.18, 0.38, 0); lLeg.isPickable = false;
-  const rLeg = BABYLON.MeshBuilder.CreateBox(`zrL_${id}`, { width: 0.2, height: 0.65, depth: 0.2 }, scene);
+  const rLeg = MeshBuilder.CreateBox(`zrL_${id}`, { width: 0.2, height: 0.65, depth: 0.2 }, scene);
   rLeg.material = zm; rLeg.parent = root; rLeg.position.set(0.18, 0.38, 0); rLeg.isPickable = false;
 
   // Suppress unused warnings for eye meshes (they're attached to scene)
@@ -238,8 +251,8 @@ export default function App() {
 
   // Mutable refs — no re-render
   const screenRef = useRef<"start" | "game" | "dead">("start");
-  const sceneRef = useRef<BABYLON.Scene | null>(null);
-  const cameraRef = useRef<BABYLON.UniversalCamera | null>(null);
+  const sceneRef = useRef<Scene | null>(null);
+  const cameraRef = useRef<UniversalCamera | null>(null);
 
   const hp = useRef(MAX_HP);
   const ammo = useRef(MAX_AMMO);
@@ -252,10 +265,10 @@ export default function App() {
   const zombieId = useRef(0);
   const zombies = useRef<ZombieEntity[]>([]);
   const keys = useRef<Record<string, boolean>>({});
-  const muzzleFlash = useRef<BABYLON.Mesh | null>(null);
+  const muzzleFlash = useRef<Mesh | null>(null);
   const muzzleTimer = useRef(0);
   const damageFlashTimer = useRef(0);
-  const gunRoot = useRef<BABYLON.Mesh | null>(null);
+  const gunRoot = useRef<Mesh | null>(null);
   const gunBobT = useRef(0);
   const bestRef = useRef(best);
 
@@ -307,7 +320,7 @@ export default function App() {
   }, [pushUi]);
 
   // ── Spawn wave ─────────────────────────────────────────────────────────────
-  const spawnWave = useCallback((scene: BABYLON.Scene) => {
+  const spawnWave = useCallback((scene: Scene) => {
     const count = 4 + wave.current * 2;
     for (let i = 0; i < count; i++) {
       const z = spawnZombie(scene, zombieId.current++, wave.current);
@@ -316,7 +329,7 @@ export default function App() {
   }, []);
 
   // ── Shoot ──────────────────────────────────────────────────────────────────
-  const shoot = useCallback((scene: BABYLON.Scene) => {
+  const shoot = useCallback((scene: Scene) => {
     if (reloading.current) return;
     if (ammo.current <= 0) { startReload(); return; }
 
@@ -329,7 +342,7 @@ export default function App() {
       const cam = cameraRef.current;
       if (cam) {
         const fwd = cam.getForwardRay(1).direction;
-        mf.position.copyFrom(cam.position).addInPlace(fwd.scale(0.55)).addInPlace(new BABYLON.Vector3(0.18, -0.13, 0));
+        mf.position.copyFrom(cam.position).addInPlace(fwd.scale(0.55)).addInPlace(new Vector3(0.18, -0.13, 0));
       }
       mf.isVisible = true;
       muzzleTimer.current = 0.06;
@@ -361,7 +374,7 @@ export default function App() {
   }, [pushUi, startReload, killZombie]);
 
   // ── Main tick ─────────────────────────────────────────────────────────────
-  const tick = useCallback((scene: BABYLON.Scene, dt: number) => {
+  const tick = useCallback((scene: Scene, dt: number) => {
     if (phase.current === "dead") return;
 
     const cam = cameraRef.current;
@@ -370,8 +383,8 @@ export default function App() {
     // ── Player movement ──────────────────────────────────────────────────────
     if (phase.current === "playing") {
       const fwd = cam.getForwardRay(1).direction;
-      const right = BABYLON.Vector3.Cross(fwd, BABYLON.Vector3.Up()).normalize();
-      const move = BABYLON.Vector3.Zero();
+      const right = Vector3.Cross(fwd, Vector3.Up()).normalize();
+      const move = Vector3.Zero();
       if (keys.current["KeyW"] || keys.current["ArrowUp"]) move.addInPlace(fwd);
       if (keys.current["KeyS"] || keys.current["ArrowDown"]) move.subtractInPlace(fwd);
       if (keys.current["KeyA"] || keys.current["ArrowLeft"]) move.subtractInPlace(right);
@@ -490,7 +503,7 @@ export default function App() {
   }, [pushUi, spawnWave]);
 
   // ── Reset game state ───────────────────────────────────────────────────────
-  const resetGame = useCallback((scene: BABYLON.Scene) => {
+  const resetGame = useCallback((scene: Scene) => {
     // Kill all zombies
     for (const z of zombies.current) {
       if (!z.dead) z.root.dispose();
@@ -526,52 +539,52 @@ export default function App() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false });
-    const scene = new BABYLON.Scene(engine);
+    const engine = new Engine(canvas, true, { preserveDrawingBuffer: false, stencil: false });
+    const scene = new Scene(engine);
     sceneRef.current = scene;
 
     scene.collisionsEnabled = true;
 
     // Sky / fog
-    scene.clearColor = new BABYLON.Color4(0.04, 0.06, 0.04, 1);
-    scene.fogMode = BABYLON.Scene.FOGMODE_EXP2;
+    scene.clearColor = new Color4(0.04, 0.06, 0.04, 1);
+    scene.fogMode = Scene.FOGMODE_EXP2;
     scene.fogDensity = 0.022;
-    scene.fogColor = new BABYLON.Color3(0.04, 0.07, 0.04);
+    scene.fogColor = new Color3(0.04, 0.07, 0.04);
 
     // ── Camera ────────────────────────────────────────────────────────────────
-    const cam = new BABYLON.UniversalCamera("fp", new BABYLON.Vector3(0, PLAYER_HEIGHT, 0), scene);
-    cam.setTarget(new BABYLON.Vector3(0, PLAYER_HEIGHT, 1));
+    const cam = new UniversalCamera("fp", new Vector3(0, PLAYER_HEIGHT, 0), scene);
+    cam.setTarget(new Vector3(0, PLAYER_HEIGHT, 1));
     cam.minZ = 0.04;
     cam.maxZ = 220;
     cam.fov = 1.08;
     cam.checkCollisions = true;
     cam.applyGravity = false;
-    cam.ellipsoid = new BABYLON.Vector3(0.45, PLAYER_HEIGHT / 2, 0.45);
-    cam.ellipsoidOffset = new BABYLON.Vector3(0, 0, 0);
+    cam.ellipsoid = new Vector3(0.45, PLAYER_HEIGHT / 2, 0.45);
+    cam.ellipsoidOffset = new Vector3(0, 0, 0);
     cameraRef.current = cam;
 
     // ── Lighting ──────────────────────────────────────────────────────────────
-    const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+    const hemi = new HemisphericLight("hemi", new Vector3(0, 1, 0), scene);
     hemi.intensity = 0.5;
-    hemi.diffuse = new BABYLON.Color3(0.45, 0.75, 0.45);
-    hemi.groundColor = new BABYLON.Color3(0.04, 0.08, 0.04);
-    const dir = new BABYLON.DirectionalLight("dir", new BABYLON.Vector3(-0.4, -1, -0.3), scene);
+    hemi.diffuse = new Color3(0.45, 0.75, 0.45);
+    hemi.groundColor = new Color3(0.04, 0.08, 0.04);
+    const dir = new DirectionalLight("dir", new Vector3(-0.4, -1, -0.3), scene);
     dir.intensity = 0.65;
-    dir.diffuse = new BABYLON.Color3(0.85, 0.95, 0.65);
+    dir.diffuse = new Color3(0.85, 0.95, 0.65);
     void hemi; void dir;
 
     // ── Ground ────────────────────────────────────────────────────────────────
-    const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: ARENA, height: ARENA, subdivisions: 6 }, scene);
-    const gm = new BABYLON.StandardMaterial("gm", scene);
-    gm.diffuseColor = new BABYLON.Color3(0.1, 0.16, 0.08);
-    gm.specularColor = BABYLON.Color3.Black();
+    const ground = MeshBuilder.CreateGround("ground", { width: ARENA, height: ARENA, subdivisions: 6 }, scene);
+    const gm = new StandardMaterial("gm", scene);
+    gm.diffuseColor = new Color3(0.1, 0.16, 0.08);
+    gm.specularColor = Color3.Black();
     ground.material = gm;
     ground.checkCollisions = true;
 
     // ── Walls ────────────────────────────────────────────────────────────────
-    const wm = new BABYLON.StandardMaterial("wm", scene);
-    wm.diffuseColor = new BABYLON.Color3(0.16, 0.2, 0.14);
-    wm.specularColor = BABYLON.Color3.Black();
+    const wm = new StandardMaterial("wm", scene);
+    wm.diffuseColor = new Color3(0.16, 0.2, 0.14);
+    wm.specularColor = Color3.Black();
     const wallH = 6, wallHalf = ARENA / 2;
     const wallDefs: { pos: [number, number, number]; w: number; d: number }[] = [
       { pos: [0, wallH / 2, wallHalf],  w: ARENA + 1.2, d: 0.7 },
@@ -580,7 +593,7 @@ export default function App() {
       { pos: [-wallHalf, wallH / 2, 0], w: 0.7, d: ARENA },
     ];
     wallDefs.forEach((d, i) => {
-      const wall = BABYLON.MeshBuilder.CreateBox(`wall${i}`, { width: d.w, height: wallH, depth: d.d }, scene);
+      const wall = MeshBuilder.CreateBox(`wall${i}`, { width: d.w, height: wallH, depth: d.d }, scene);
       wall.position.set(...d.pos);
       wall.material = wm;
       wall.checkCollisions = true;
@@ -589,10 +602,10 @@ export default function App() {
     });
 
     // ── Obstacles ────────────────────────────────────────────────────────────
-    const cm = new BABYLON.StandardMaterial("cm", scene);
-    cm.diffuseColor = new BABYLON.Color3(0.32, 0.24, 0.16);
-    const bm = new BABYLON.StandardMaterial("bm", scene);
-    bm.diffuseColor = new BABYLON.Color3(0.18, 0.18, 0.2);
+    const cm = new StandardMaterial("cm", scene);
+    cm.diffuseColor = new Color3(0.32, 0.24, 0.16);
+    const bm = new StandardMaterial("bm", scene);
+    bm.diffuseColor = new Color3(0.18, 0.18, 0.2);
 
     const cratePos: [number, number][] = [
       [6, 4], [-6, 4], [6, -4], [-6, -4],
@@ -601,7 +614,7 @@ export default function App() {
       [14, 0], [-14, 0], [0, 14], [0, -14],
     ];
     cratePos.forEach(([x, z], i) => {
-      const c = BABYLON.MeshBuilder.CreateBox(`crate${i}`, { width: 1.3, height: 1.3, depth: 1.3 }, scene);
+      const c = MeshBuilder.CreateBox(`crate${i}`, { width: 1.3, height: 1.3, depth: 1.3 }, scene);
       c.position.set(x, 0.65, z);
       c.material = cm;
       c.checkCollisions = true;
@@ -614,7 +627,7 @@ export default function App() {
       [12, 4], [-12, 4], [12, -4], [-12, -4],
     ];
     barrelPos.forEach(([x, z], i) => {
-      const b = BABYLON.MeshBuilder.CreateCylinder(`barrel${i}`, { diameter: 0.75, height: 1.1, tessellation: 8 }, scene);
+      const b = MeshBuilder.CreateCylinder(`barrel${i}`, { diameter: 0.75, height: 1.1, tessellation: 8 }, scene);
       b.position.set(x, 0.55, z);
       b.material = bm;
       b.checkCollisions = true;
@@ -623,35 +636,35 @@ export default function App() {
     });
 
     // ── Gun model ────────────────────────────────────────────────────────────
-    const gunRootMesh = new BABYLON.Mesh("gunRoot", scene);
-    const dark = new BABYLON.StandardMaterial("gd", scene);
-    dark.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.11);
-    dark.specularColor = new BABYLON.Color3(0.3, 0.3, 0.3);
-    const wood = new BABYLON.StandardMaterial("gw", scene);
-    wood.diffuseColor = new BABYLON.Color3(0.28, 0.16, 0.08);
+    const gunRootMesh = new Mesh("gunRoot", scene);
+    const dark = new StandardMaterial("gd", scene);
+    dark.diffuseColor = new Color3(0.1, 0.1, 0.11);
+    dark.specularColor = new Color3(0.3, 0.3, 0.3);
+    const wood = new StandardMaterial("gw", scene);
+    wood.diffuseColor = new Color3(0.28, 0.16, 0.08);
 
-    const gbody = BABYLON.MeshBuilder.CreateBox("gbody", { width: 0.085, height: 0.1, depth: 0.38 }, scene);
+    const gbody = MeshBuilder.CreateBox("gbody", { width: 0.085, height: 0.1, depth: 0.38 }, scene);
     gbody.material = dark; gbody.parent = gunRootMesh;
 
-    const gbarrel = BABYLON.MeshBuilder.CreateCylinder("gbarrel", { diameter: 0.036, height: 0.3, tessellation: 8 }, scene);
+    const gbarrel = MeshBuilder.CreateCylinder("gbarrel", { diameter: 0.036, height: 0.3, tessellation: 8 }, scene);
     gbarrel.rotation.x = Math.PI / 2; gbarrel.material = dark; gbarrel.parent = gunRootMesh; gbarrel.position.set(0, 0.018, 0.33);
 
-    const gshroud = BABYLON.MeshBuilder.CreateCylinder("gshroud", { diameter: 0.055, height: 0.18, tessellation: 8 }, scene);
+    const gshroud = MeshBuilder.CreateCylinder("gshroud", { diameter: 0.055, height: 0.18, tessellation: 8 }, scene);
     gshroud.rotation.x = Math.PI / 2; gshroud.material = dark; gshroud.parent = gunRootMesh; gshroud.position.set(0, 0.018, 0.28);
 
-    const ggrip = BABYLON.MeshBuilder.CreateBox("ggrip", { width: 0.072, height: 0.15, depth: 0.075 }, scene);
+    const ggrip = MeshBuilder.CreateBox("ggrip", { width: 0.072, height: 0.15, depth: 0.075 }, scene);
     ggrip.material = wood; ggrip.parent = gunRootMesh; ggrip.position.set(0, -0.11, -0.06); ggrip.rotation.x = 0.22;
 
-    const gtg = BABYLON.MeshBuilder.CreateTorus("gtg", { diameter: 0.06, thickness: 0.012, tessellation: 8 }, scene);
+    const gtg = MeshBuilder.CreateTorus("gtg", { diameter: 0.06, thickness: 0.012, tessellation: 8 }, scene);
     gtg.material = dark; gtg.parent = gunRootMesh; gtg.position.set(0, -0.045, 0.02); gtg.rotation.x = Math.PI / 2;
 
-    const gsr = BABYLON.MeshBuilder.CreateBox("gsr", { width: 0.022, height: 0.028, depth: 0.012 }, scene);
+    const gsr = MeshBuilder.CreateBox("gsr", { width: 0.022, height: 0.028, depth: 0.012 }, scene);
     gsr.material = dark; gsr.parent = gunRootMesh; gsr.position.set(0, 0.066, -0.06);
 
-    const gsf = BABYLON.MeshBuilder.CreateBox("gsf", { width: 0.012, height: 0.024, depth: 0.012 }, scene);
+    const gsf = MeshBuilder.CreateBox("gsf", { width: 0.012, height: 0.024, depth: 0.012 }, scene);
     gsf.material = dark; gsf.parent = gunRootMesh; gsf.position.set(0, 0.066, 0.16);
 
-    const gmag = BABYLON.MeshBuilder.CreateBox("gmag", { width: 0.065, height: 0.1, depth: 0.055 }, scene);
+    const gmag = MeshBuilder.CreateBox("gmag", { width: 0.065, height: 0.1, depth: 0.055 }, scene);
     gmag.material = dark; gmag.parent = gunRootMesh; gmag.position.set(0, -0.075, 0.0);
 
     void gbody; void gbarrel; void gshroud; void ggrip; void gtg; void gsr; void gsf; void gmag;
@@ -662,10 +675,10 @@ export default function App() {
     gunRoot.current = gunRootMesh;
 
     // ── Muzzle flash ─────────────────────────────────────────────────────────
-    const mf = BABYLON.MeshBuilder.CreateSphere("mf", { diameter: 0.22, segments: 5 }, scene);
-    const mfm = new BABYLON.StandardMaterial("mfm", scene);
-    mfm.diffuseColor = new BABYLON.Color3(1, 0.9, 0.3);
-    mfm.emissiveColor = new BABYLON.Color3(1, 0.75, 0.1);
+    const mf = MeshBuilder.CreateSphere("mf", { diameter: 0.22, segments: 5 }, scene);
+    const mfm = new StandardMaterial("mfm", scene);
+    mfm.diffuseColor = new Color3(1, 0.9, 0.3);
+    mfm.emissiveColor = new Color3(1, 0.75, 0.1);
     mf.material = mfm;
     mf.isVisible = false;
     muzzleFlash.current = mf;
@@ -673,7 +686,7 @@ export default function App() {
     // ── Input ─────────────────────────────────────────────────────────────────
     scene.onKeyboardObservable.add((info) => {
       const k = info.event.code;
-      if (info.type === BABYLON.KeyboardEventTypes.KEYDOWN) {
+      if (info.type === KeyboardEventTypes.KEYDOWN) {
         keys.current[k] = true;
         if (k === "KeyR") startReload();
       } else {
